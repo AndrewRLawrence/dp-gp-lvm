@@ -24,12 +24,13 @@ class NewDataBound:
     ----------
     lower_bound : torch.Tensor
         The lower bound of the training data and the test data together.
-    test_log_likelihood : torch.Tensor or None
-        The approximate log-likelihood of the test data. MRD does not supply it.
+    test_log_likelihood : torch.Tensor
+        The approximate log-likelihood ``log p(Y*|Y) ≈ F(q(X, X*)) - F(q(X))`` of the test data, from Damianou et al.
+        (2016), eq. (36). ``F(q(X, X*))`` is the lower bound above. ``F(q(X))`` is the lower bound of the training data.
     """
 
     lower_bound: torch.Tensor
-    test_log_likelihood: torch.Tensor | None
+    test_log_likelihood: torch.Tensor
 
 
 @dataclass(frozen=True)

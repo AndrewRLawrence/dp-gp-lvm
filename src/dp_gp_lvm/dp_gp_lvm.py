@@ -317,7 +317,7 @@ class DPGPLVM(LatentVariableModel):
         Returns
         -------
         NewDataBound
-            The joint lower bound and the approximate test log-likelihood ``F̂* - KL*``.
+            The joint lower bound and the approximate test log-likelihood.
         """
         self._check_plug_in()
         y = self._tensor(y_test)
@@ -343,7 +343,7 @@ class DPGPLVM(LatentVariableModel):
         )
         kl_test = kl_standard_normal(test_mean, test_variance)
         lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        return NewDataBound(lower_bound, f_hat_test - kl_test)
+        return NewDataBound(lower_bound, lower_bound - (state.f_hat - kl))
 
     def missing_data_bound(
         self, y_observed: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor

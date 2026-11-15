@@ -70,6 +70,12 @@ def test_dp_gp_lvm_with_one_component_has_the_test_bounds_of_the_bayesian_gplvm(
             expected = getattr(bgplvm, method)(y, mean, variance)
             actual = getattr(model, method)(y, mean, variance)
             torch.testing.assert_close(actual.lower_bound, expected.lower_bound, rtol=1e-12, atol=1e-9)
+        torch.testing.assert_close(
+            model.new_data_bound(y_test, mean, variance).test_log_likelihood,
+            bgplvm.new_data_bound(y_test, mean, variance).test_log_likelihood,
+            rtol=1e-10,
+            atol=1e-9,
+        )
         expected = bgplvm.missing_data_bound(y_test[:, :D_OBS], mean, variance)
         actual = model.missing_data_bound(y_test[:, :D_OBS], mean, variance)
     torch.testing.assert_close(actual.mean, expected.mean, rtol=1e-10, atol=1e-12)
@@ -185,3 +191,27 @@ def test_one_test_point_gives_the_legacy_covariance(
         legacy = legacy_reference.missing_data_bound(model, y_observed, mean, variance)
     expected = legacy.covariance if name == "bgplvm" else legacy.covariances[0]
     torch.testing.assert_close(covariance, expected, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("name", ["bgplvm", "mrd", "dp_gp_lvm"])
+def test_test_log_likelihood_is_the_difference_of_the_lower_bounds(
+    data: tuple[np.ndarray, np.ndarray],
+    test_latents: tuple[torch.Tensor, torch.Tensor],
+    rng: np.random.Generator,
+    name: str,
+) -> None:
+    """Item 3: [C] eq. (20) and [J] eq. (36) give log p(Y*|Y) ≈ F(q(X, X*)) - F(q(X)) for all models."""
+    y_train, y_test = data
+    mean, variance = test_latents
+    with torch.no_grad():
+        if name == "mrd":
+            model = MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0)
+            randomise(model, rng)
+            bound = model.new_data_bound([y_test[:, :D_OBS], y_test[:, D_OBS:]], mean, variance)
+        else:
+            model = BayesianGPLVM(y_train, Q, M, seed=0) if name == "bgplvm" else DPGPLVM(y_train, Q, M, T, seed=0)
+            randomise(model, rng)
+            bound = model.new_data_bound(y_test, mean, variance)
+    x_mean, x_var = numpy_latents(model)
+    training_bound = oracles.training_bound(y_train, x_mean, x_var, kernel_columns(model))
+    np.testing.assert_allclose(bound.test_log_likelihood.item(), bound.lower_bound.item() - training_bound, rtol=1e-9)

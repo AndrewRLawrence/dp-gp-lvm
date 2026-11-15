@@ -51,7 +51,7 @@ def test_predict_new_latent_variables(data: tuple[np.ndarray, np.ndarray], index
     result = model.predict_new_latent_variables(y_test, iterations=10, use_pca=use_pca)
     assert isinstance(result, LatentPrediction)
     assert result.latent_mean.shape == (N_TEST, Q)
-    assert result.bound.test_log_likelihood is not None
+    assert torch.isfinite(result.bound.test_log_likelihood)
     assert torch.isfinite(result.bound.lower_bound)
     assert result.history[-1] > result.history[0]
 
@@ -60,7 +60,7 @@ def test_mrd_predictions(data: tuple[np.ndarray, np.ndarray]) -> None:
     y_train, y_test = data
     mrd = MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0)
     new = mrd.predict_new_latent_variables([y_test[:, :D_OBS], y_test[:, D_OBS:]], iterations=5)
-    assert new.bound.test_log_likelihood is None
+    assert torch.isfinite(new.bound.test_log_likelihood)
     missing = mrd.predict_missing_data([y_test[:, :D_OBS]], iterations=5, use_pca=False)
     means, covariances = missing.bound.means, missing.bound.covariances
     assert [m.shape for m in means] == [(N_TEST, D - D_OBS)]

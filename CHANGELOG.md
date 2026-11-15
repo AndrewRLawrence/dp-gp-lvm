@@ -44,6 +44,9 @@ golden values.
   variance of each test point. Before, the statistics were sums over all test points, so the variance grew with N\*,
   and a constant term coupled all test points. The fix changes the predictive covariances of all models when N\* > 1,
   so all missing-data log-likelihoods change.
+- Item 3: all models return the approximate test log-likelihood `F(q(X, X*)) − F(q(X))` of the BGP-LVM papers.
+  Before, the Bayesian GP-LVM returned `F̂* − F̂`, and MRD returned none. `NewDataBound.test_log_likelihood` is now
+  always a tensor. The value of DP-GP-LVM does not change. No experiment uses the value of the Bayesian GP-LVM or MRD.
 - Item 6: MRD predicts each unobserved view with the training term of that view. Before, every unobserved view used
   the term of the last view. The fix has no effect when only the last view is unobserved, as in all the experiments.
 - Item 7: the DP-GP-LVM test bound has one trace term for each dimension, as in eq. (18) of the DP-GP-LVM
@@ -91,9 +94,6 @@ The port copies these legacy behaviours, so the parity tests pass. Each one has 
 [docs/legacy-quirks.md](docs/legacy-quirks.md) compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers and
 proposes a fix. The item numbers are the numbers in that document. "Fixed" under "Unreleased" gives the fixed items.
 
-- **Item 3.** The test log-likelihood has two definitions. The Bayesian GP-LVM uses `F̂* − F̂`. DP-GP-LVM uses
-  `F̂* − KL*`, which agrees with the papers when the bound of item 5 is used. Confidence that the BGP-LVM version is a
-  bug: high.
 - **Item 4.** With `mask_size > 1`, the DP terms count every row of Φ. Only `D / mask_size` rows are free.
   Confidence: medium-high.
 - **Item 5.** The test bound is a separate collapsed bound on the test data. All four papers use one collapsed bound on

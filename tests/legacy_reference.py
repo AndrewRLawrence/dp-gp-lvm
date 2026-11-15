@@ -23,9 +23,17 @@ from dp_gp_lvm._numerics import trace as batch_trace
 from dp_gp_lvm.dirichlet_process import _exclusive_reverse_cumsum
 from dp_gp_lvm.distributions import beta_entropy, gamma_entropy, kl_standard_normal, multinomial_entropy
 from dp_gp_lvm.kernels import ARDRBFKernel
-from dp_gp_lvm.prediction import MissingDataBound, NewDataBound, ViewsMissingDataBound
+from dp_gp_lvm.prediction import MissingDataBound, ViewsMissingDataBound
 
 _LOG_2PI = math.log(2.0 * math.pi)
+
+
+@dataclass(frozen=True)
+class NewDataBound:
+    """The legacy lower bound terms for new test data. The legacy MRD has no test log-likelihood (item 3)."""
+
+    lower_bound: torch.Tensor
+    test_log_likelihood: torch.Tensor | None
 
 
 @dataclass(frozen=True)

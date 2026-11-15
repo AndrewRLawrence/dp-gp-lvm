@@ -292,8 +292,7 @@ class BayesianGPLVM(LatentVariableModel):
         f_hat_test = _test_free_energy(state, stats, y)
         kl_test = kl_standard_normal(test_mean, test_variance)
         lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        # NOTE(legacy): DP-GP-LVM uses f̂* - KL* here. See CHANGELOG.md, known issue 3.
-        return NewDataBound(lower_bound, f_hat_test - state.f_hat)
+        return NewDataBound(lower_bound, lower_bound - (state.f_hat - kl))
 
     def missing_data_bound(
         self, y_observed: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor
@@ -582,6 +581,7 @@ class MRD(LatentVariableModel):
     def _test_bound(
         self, views: list[torch.Tensor], test_mean: torch.Tensor, test_variance: torch.Tensor
     ) -> tuple[list[_ViewState], list[_TestStats], torch.Tensor]:
+        """Return the training states, the test statistics, and the lower bound of the training and test views."""
         states = self._states()
         kl = self.kl_divergence()
         f_hat = torch.stack([s.f_hat for s in states]).sum()
@@ -611,11 +611,12 @@ class MRD(LatentVariableModel):
         Returns
         -------
         NewDataBound
-            The joint lower bound. MRD does not supply a test log-likelihood.
+            The joint lower bound and the approximate test log-likelihood.
         """
         views = self._check_views(views_test, partial=False)
-        _, _, lower_bound = self._test_bound(views, test_mean, test_variance)
-        return NewDataBound(lower_bound, None)
+        states, _, lower_bound = self._test_bound(views, test_mean, test_variance)
+        training_bound = torch.stack([s.f_hat for s in states]).sum() - self.kl_divergence()
+        return NewDataBound(lower_bound, lower_bound - training_bound)
 
     def missing_data_bound(
         self, views_observed: Sequence[ArrayInput], test_mean: torch.Tensor, test_variance: torch.Tensor
