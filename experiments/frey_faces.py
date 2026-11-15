@@ -76,12 +76,12 @@ def prepare(
     return y_train, y_test[:, :num_observed], y_test[:, num_observed:]
 
 
-def builders(y: np.ndarray, num_observed: int, q: int, m: int, t: int) -> dict[str, Callable[[], Model]]:
-    """Return the models of this experiment."""
+def builders(y: np.ndarray, num_observed: int, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+    """Return the models of this experiment. Each builder takes the seed of the initial values."""
     return {
-        "bgplvm": lambda: BayesianGPLVM(y, q, m, seed=INIT_SEED),
-        "dp_gp_lvm": lambda: DPGPLVM(y, q, m, t, seed=INIT_SEED),
-        "mrd": lambda: MRD([y[:, :num_observed], y[:, num_observed:]], q, m, seed=INIT_SEED),
+        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
+        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, seed=seed),
+        "mrd": lambda seed: MRD([y[:, :num_observed], y[:, num_observed:]], q, m, seed=seed),
     }
 
 
@@ -112,8 +112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         for label in args.models:
             result = f"{label}_frey_faces_{args.variant}_seed{seed}"
             if not store.skip(result):
-                arrays = train_and_predict(available[label](), label, run, observed, unobserved)
-                store.save(result, {"variant": args.variant, "seed": seed, **vars(run)}, y_train=y_train, **arrays)
+                trained, prediction = train_and_predict(available[label], label, run, observed, unobserved, INIT_SEED)
+                config = {"variant": args.variant, "seed": seed, **vars(run), **trained.config()}
+                store.save(result, config, y_train=y_train, **trained.arrays(), **prediction)
             scores.setdefault(label, []).append(float(store.load(result)["gt_log_likelihood"]))
     print("\nGround-truth log-likelihood of the missing pixels (mean ± standard error over seeds):")
     for label, values in scores.items():

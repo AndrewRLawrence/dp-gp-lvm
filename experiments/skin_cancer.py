@@ -23,7 +23,6 @@ from experiments._common import (
     Defaults,
     Model,
     ResultStore,
-    model_arrays,
     parser,
     save_figure,
     settings,
@@ -36,13 +35,13 @@ DEFAULTS = Defaults(iterations=5000, learning_rate=0.01, latent_dims=15, inducin
 PIXELS = 64
 
 
-def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[], Model]]:
-    """Return the models of this experiment."""
+def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+    """Return the models of this experiment. Each builder takes the seed of the initial values."""
     views = [y[:, i : i + PIXELS] for i in range(0, y.shape[1], PIXELS)]
     return {
-        "bgplvm": lambda: BayesianGPLVM(y, q, m, seed=1),
-        "mrd": lambda: MRD(views, q, m, seed=1),
-        "dp_gp_lvm": lambda: DPGPLVM(y, q, m, t, seed=1),
+        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
+        "mrd": lambda seed: MRD(views, q, m, seed=seed),
+        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, seed=seed),
     }
 
 
@@ -68,16 +67,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = f"{label}_skin_cancer_mnist_{name}"
             if store.skip(result):
                 continue
-            model = available[label]()
-            history, seconds = train(model, run, label)
-            arrays = model_arrays(model)
+            trained = train(available[label], run, label)
+            arrays = trained.arrays()
             store.save(
                 result,
-                {"labels": labels, **vars(run)},
+                {"labels": labels, **vars(run), **trained.config()},
                 original_data=images,
                 y_train=y,
-                train_history=np.asarray(history),
-                train_opt_time=seconds,
                 **arrays,
             )
             weights = arrays["ard_weights"].reshape(-1, run.latent_dims)

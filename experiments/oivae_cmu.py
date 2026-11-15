@@ -12,7 +12,7 @@ Run ``uv run python -m experiments.oivae_cmu --help`` for the options.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -22,7 +22,6 @@ from experiments._common import (
     Defaults,
     ResultStore,
     Settings,
-    model_arrays,
     parser,
     save_figure,
     settings,
@@ -59,6 +58,11 @@ def joint_relevance(ard_weights: np.ndarray, joint_dims: dict[str, int], skip: i
     return [[names[j] for j in np.argsort(per_joint[:, q])[::-1][:3]] for q in order]
 
 
+def dp_gp_lvm_builder(y: np.ndarray, run: Settings) -> Callable[[int], DPGPLVM]:
+    """Return a function that takes a seed and returns a new DP-GP-LVM with the run settings."""
+    return lambda seed: DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=seed)
+
+
 def run_comparison(run: Settings, store: ResultStore, num_frames: int) -> None:
     """Train on random frames of sequences 1-10 and print the joints of each latent dimension."""
     result = "dp_gp_lvm_cmu_subject7_joint_angles"
@@ -68,17 +72,8 @@ def run_comparison(run: Settings, store: ResultStore, num_frames: int) -> None:
         indices = rng.choice(frames.shape[0], size=num_frames, replace=False)
         (y,) = standardise(frames[indices, ROOT_DIMS:])
         print(f"CMU subject 7, sequences 1-10: N={y.shape[0]}, D={y.shape[1]}.")
-        model = DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=1)
-        history, seconds = train(model, run, "dp_gp_lvm")
-        store.save(
-            result,
-            vars(run),
-            original_data=frames,
-            y_train=y,
-            train_history=np.asarray(history),
-            train_opt_time=seconds,
-            **model_arrays(model),
-        )
+        trained = train(dp_gp_lvm_builder(y, run), run, "dp_gp_lvm")
+        store.save(result, vars(run) | trained.config(), original_data=frames, y_train=y, **trained.arrays())
     arrays = store.load(result)
     print("\nThe three most relevant joints of each latent dimension:")
     for q, joints in enumerate(joint_relevance(arrays["ard_weights"], cmu_subject7_joint_dims(), skip=ROOT_DIMS)):
@@ -95,9 +90,9 @@ def run_test_loglikelihood(run: Settings, store: ResultStore, frame_step: int, s
             train_frames = cmu_subject7(sequence)[::frame_step]
             test_frames = [cmu_subject7(s)[::frame_step] for s in TEST_SEQUENCES]
             y_train, *y_tests = standardise(train_frames, *test_frames)
-            model = DPGPLVM(y_train, run.latent_dims, run.inducing_points, run.truncation_level, seed=1)
-            history, seconds = train(model, run, f"dp_gp_lvm seq {sequence}")
-            arrays: dict[str, np.ndarray | float] = {"train_history": np.asarray(history), "train_opt_time": seconds}
+            trained = train(dp_gp_lvm_builder(y_train, run), run, f"dp_gp_lvm seq {sequence}")
+            model = trained.model
+            arrays: dict[str, np.ndarray | float] = {**trained.arrays()}
             for test_sequence, y_test in zip(TEST_SEQUENCES, y_tests, strict=True):
                 prediction = model.predict_new_latent_variables(
                     y_test, iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser
@@ -108,7 +103,7 @@ def run_test_loglikelihood(run: Settings, store: ResultStore, frame_step: int, s
                     raise RuntimeError(msg)
                 arrays[f"test_log_likelihood_{test_sequence}"] = test_log_likelihood.item()
                 arrays[f"x_test_mean_{test_sequence}"] = prediction.latent_mean.numpy()
-            store.save(result, {"sequence": sequence, **vars(run)}, y_train=y_train, **model_arrays(model), **arrays)
+            store.save(result, {"sequence": sequence, **vars(run), **trained.config()}, y_train=y_train, **arrays)
         saved = store.load(result)
         for test_sequence in TEST_SEQUENCES:
             scores[test_sequence].append(float(saved[f"test_log_likelihood_{test_sequence}"]))
