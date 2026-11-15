@@ -122,8 +122,19 @@ in this repository. `data/README.md` gives the source and the licence of each da
 
 - The models use float64 by default. The Cholesky factors need double precision.
 - Use the CPU or a CUDA GPU. Apple MPS does not support float64.
-- The Psi-2 statistic uses memory in proportion to `D x N x M² x Q`. The legacy settings of the large experiments
-  need several GB of memory. Use smaller `--inducing-points` or `--latent-dims` values on small machines.
+- The Psi-2 statistic uses memory in proportion to `B x N x M²`. `B` is the size of the kernel batch. For DP-GP-LVM,
+  `B` is `D`, or `T` with `expectation="mixture"`. For the Bayesian GP-LVM and for each view of MRD, `B` is 1.
+  The legacy settings of the largest experiments need less than 1 GB.
+  This table gives the peak memory (resident set size) of one objective evaluation and its gradient on the CPU.
+  The legacy code made a `B x N x M² x Q` tensor.
+
+  | DP-GP-LVM data set               | N  | D   | M  | Q  | Legacy code | This version |
+  | -------------------------------- | -- | --- | -- | -- | ----------- | ------------ |
+  | `cmu_swapped_legs`               | 90 | 186 | 30 | 20 | 12.4 GB     | 0.63 GB      |
+  | `skin_cancer`, six conditions    | 70 | 384 | 35 | 15 | 20.3 GB     | 0.91 GB      |
+  | `skin_cancer`, seven conditions  | 65 | 448 | 35 | 15 | 22.0 GB     | 0.96 GB      |
+
+  If the memory is not sufficient, use a smaller `--inducing-points` value.
 - `fit(..., optimiser="legacy")` copies the Adam numerics of TensorFlow 1.15. It reproduces legacy runs exactly.
   The default `optimiser="adam"` uses `torch.optim.Adam`.
 
