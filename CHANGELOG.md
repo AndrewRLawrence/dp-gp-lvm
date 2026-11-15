@@ -6,6 +6,20 @@ This file records the notable changes of each version. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `fit_restarts` and `Restarts`: train one model for each seed and keep the model with the lowest final objective.
+  The objective is not convex, so restarts make a bad local optimum less likely.
+- The experiment options `--restarts N` and `--model-seed`. The defaults train one model with the legacy seed, as
+  before.
+- The keys `restart_seeds`, `restart_objectives`, and `best_seed` in the `.npz` and `.json` result files.
+
+### Changed
+
+- `train_opt_time` in the experiment result files is the total training time of all restarts. With one restart, the
+  value has the same meaning as before.
+- The experiments print the seed of each training run, and the final objective of each restart.
+
 ## [1.0.0] - Unreleased
 
 This version ports the code from TensorFlow 1.15 to PyTorch. The maths stays the same. The git tag `legacy-tf1`
