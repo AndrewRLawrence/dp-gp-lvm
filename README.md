@@ -143,8 +143,10 @@ uv sync
 uv run pre-commit install
 ```
 
-`uv sync` installs the package and the `dev` dependency group. On Linux, the lock file uses CPU-only torch wheels.
-To use CUDA on Linux, remove the `[tool.uv.sources]` torch entry from `pyproject.toml`.
+`uv sync` installs the package and the `dev` dependency group. On Linux, the lock file of this repository uses
+CPU-only torch wheels. This keeps the development and CI environments small. It does not apply to users of the
+package: `pip install` and `uv add` get torch from PyPI, which includes CUDA support on Linux. To develop with CUDA
+in this repository, remove the `[tool.uv.sources]` torch entry from `pyproject.toml`.
 
 Run these checks before you push. CI runs the same checks.
 
