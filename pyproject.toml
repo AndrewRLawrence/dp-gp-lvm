@@ -88,21 +88,8 @@ explicit = true
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-# The legacy TensorFlow 1 code stays in the tree until the port is complete.
-# The golden-value generator must run on Python 3.6, so ruff does not check it.
-extend-exclude = [
-    "src/__init__.py",
-    "src/data_io",
-    "src/distributions",
-    "src/kernels",
-    "src/main.py",
-    "src/models",
-    "src/utils",
-    "src/visualisation",
-    "src/web",
-    "test",
-    "scripts/legacy_golden",
-]
+# The golden-value generator must run on Python 3.6 with TensorFlow 1.15, so ruff does not check it.
+extend-exclude = ["scripts/legacy_golden"]
 
 [tool.ruff.lint]
 select = [

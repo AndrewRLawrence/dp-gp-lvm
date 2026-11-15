@@ -292,7 +292,7 @@ class BayesianGPLVM(LatentVariableModel):
         f_hat_test = _test_free_energy(state, stats, y)
         kl_test = kl_standard_normal(test_mean, test_variance)
         lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        # NOTE(legacy): the DP-GP-LVM model uses f̂* - KL* here. Phase 8 reviews this difference.
+        # NOTE(legacy): DP-GP-LVM uses f̂* - KL* here. See CHANGELOG.md, known issue 3.
         return NewDataBound(lower_bound, f_hat_test - state.f_hat)
 
     def missing_data_bound(
@@ -630,7 +630,7 @@ class MRD(LatentVariableModel):
         """
         views = self._check_views(views_observed, partial=True)
         states, stats, lower_bound = self._test_bound(views, test_mean, test_variance)
-        # NOTE(legacy): every unobserved view uses the training ``C`` of the last view. Phase 8 reviews this.
+        # NOTE(legacy): every unobserved view uses the training C of the last view. See CHANGELOG.md, known issue 6.
         c_last = states[-1].c
         means, covariances = [], []
         for v in range(len(views), self.number_of_views):

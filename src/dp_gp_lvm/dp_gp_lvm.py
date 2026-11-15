@@ -338,7 +338,7 @@ class DPGPLVM(LatentVariableModel):
         f_hat_test = (
             0.5 * num_test * (torch.log(beta).sum() - num_dims * _LOG_2PI)
             - log_det_l_a
-            # NOTE(legacy): (D,) - (D, 1) broadcasts to (D, D) here. Phase 8 reviews this.
+            # NOTE(legacy): (D,) - (D, 1) broadcasts to (D, D) here. See CHANGELOG.md, known issue 7.
             + 0.5 * (beta * (batch_trace(whitened) - psi_0)).sum()
             - 0.5 * (beta * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
             + 0.5 * ((y_beta_d1n @ c_t_c) @ transpose(y_beta_d1n)).sum()
@@ -392,7 +392,7 @@ class DPGPLVM(LatentVariableModel):
         f_hat_test = (
             0.5 * num_test * (torch.log(beta_observed).sum() - num_observed * _LOG_2PI)
             - log_det_l_a
-            # NOTE(legacy): (Do,) - (Do, 1) broadcasts to (Do, Do) here. Phase 8 reviews this.
+            # NOTE(legacy): (Do,) - (Do, 1) broadcasts to (Do, Do) here. See CHANGELOG.md, known issue 7.
             + 0.5 * (beta_observed * (batch_trace(whitened_observed) - psi_0[:num_observed])).sum()
             - 0.5 * (beta_observed * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
             + 0.5 * ((y_beta_do1n @ c_t_c) @ transpose(y_beta_do1n)).sum()
@@ -411,7 +411,7 @@ class DPGPLVM(LatentVariableModel):
         yu_variance = beta_unobserved**2 * (transpose(scale_du_yu) @ (g @ scale_du_yu)).squeeze(-1)
         trace_term = batch_trace(difference @ psi_2).unsqueeze(-1)[num_observed:]
         eye = batch_eye(num_test, num_dims - num_observed, beta)
-        # NOTE(legacy): this adds the trace term. BGP-LVM and MRD subtract it. Phase 8 reviews this.
+        # NOTE(legacy): this adds the trace term, and BGP-LVM and MRD subtract it. See CHANGELOG.md, known issues 1, 2.
         covariance = (
             yu_variance.unsqueeze(-1)
             + (psi_0[num_observed:] + torch.reciprocal(beta_unobserved) + trace_term).unsqueeze(-1) * eye

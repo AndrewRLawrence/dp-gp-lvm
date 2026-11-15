@@ -129,7 +129,7 @@ class DirichletProcess(nn.Module):
         digamma = torch.special.digamma
         digamma_sum = digamma(gamma_1 + gamma_2)
 
-        # NOTE(legacy): with mask_size > 1, these sums count every row of Φ, not only the free rows.
+        # NOTE(legacy): with mask_size > 1, these sums count every row of Φ. See CHANGELOG.md, known issue 4.
         ev_log_p_z_given_v = (
             phi[:, :-1] * (digamma(gamma_1) - digamma_sum)
             + _exclusive_reverse_cumsum(phi)[:, :-1] * (digamma(gamma_2) - digamma_sum)

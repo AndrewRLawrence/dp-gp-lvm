@@ -1,7 +1,7 @@
 # Run all hooks: uv run pre-commit run --all-files
 # Install the git hook: uv run pre-commit install
 # This file also works with prek, a faster drop-in runner.
-exclude: ^(src/(__init__\.py|main\.py|data_io|distributions|kernels|models|utils|visualisation|web)|test)/?
+exclude: ^scripts/legacy_golden/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

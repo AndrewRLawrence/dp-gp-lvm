@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "DP-GP-LVM"
+abstract: >-
+  A Bayesian non-parametric latent variable model that learns dependency structures across the dimensions of
+  multivariate data. Gaussian process priors map the latent space to the data. A Dirichlet process prior groups the
+  observed dimensions.
+type: software
+authors:
+  - family-names: Lawrence
+    given-names: Andrew R.
+  - family-names: Ek
+    given-names: Carl Henrik
+  - family-names: Campbell
+    given-names: Neill D. F.
+repository-code: "https://github.com/AndrewRLawrence/dp-gp-lvm"
+license: MIT
+version: 1.0.0
+keywords:
+  - gaussian-process
+  - dirichlet-process
+  - latent-variable-model
+  - variational-inference
+  - bayesian-nonparametrics
+preferred-citation:
+  type: conference-paper
+  title: "DP-GP-LVM: A Bayesian Non-Parametric Model for Learning Multivariate Dependency Structures"
+  authors:
+    - family-names: Lawrence
+      given-names: Andrew R.
+    - family-names: Ek
+      given-names: Carl Henrik
+    - family-names: Campbell
+      given-names: Neill D. F.
+  collection-title: "Proceedings of the 36th International Conference on Machine Learning"
+  collection-type: proceedings
+  conference:
+    name: "International Conference on Machine Learning (ICML)"
+    city: "Long Beach, California"
+    country: US
+  editors:
+    - family-names: Chaudhuri
+      given-names: Kamalika
+    - family-names: Salakhutdinov
+      given-names: Ruslan
+  publisher:
+    name: PMLR
+  volume: 97
+  start: 3682
+  end: 3691
+  year: 2019
+  url: "https://proceedings.mlr.press/v97/lawrence19a.html"
