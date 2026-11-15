@@ -148,7 +148,7 @@ include = ["src/dp_gp_lvm", "tests", "experiments", "scripts/ci"]
 [tool.pytest]
 minversion = "9.0"
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = [".", "tests"]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
 filterwarnings = ["error"]
