@@ -1,0 +1,33 @@
+# Run all hooks: uv run pre-commit run --all-files
+# Install the git hook: uv run pre-commit install
+# This file also works with prek, a faster drop-in runner.
+exclude: ^(src/(__init__\.py|main\.py|data_io|distributions|kernels|models|utils|visualisation|web)|test)/?
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=3000]
+      - id: check-merge-conflict
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.13.8
+    hooks:
+      - id: uv-lock
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty check
+        entry: uv run --locked ty check
+        language: system
+        types: [python]
+        pass_filenames: false
