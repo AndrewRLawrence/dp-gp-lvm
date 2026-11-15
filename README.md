@@ -196,7 +196,8 @@ maths:
 - The web GUI, the PoseTrack and horse scripts, and the unused models are removed.
 
 The port keeps some legacy behaviours that can be bugs, for example in the predictive variance.
-[CHANGELOG.md](CHANGELOG.md) lists them under "Known issues".
+[CHANGELOG.md](CHANGELOG.md) lists them under "Known issues". [docs/legacy-quirks.md](docs/legacy-quirks.md) compares
+each one with the papers.
 
 ## Citation
 
