@@ -36,6 +36,8 @@ These fixes follow the review in [docs/legacy-quirks.md](docs/legacy-quirks.md).
 that document. `tests/legacy_reference.py` keeps the legacy formulas, and the parity tests compare them with the legacy
 golden values.
 
+- Item 6: MRD predicts each unobserved view with the training term of that view. Before, every unobserved view used
+  the term of the last view. The fix has no effect when only the last view is unobserved, as in all the experiments.
 - Item 7: the DP-GP-LVM test bound has one trace term for each dimension, as in eq. (18) of the DP-GP-LVM
   paper. Before, a `(D,)` minus `(D, 1)` broadcast made a `(D, D)` term. The fix changes q(X*), the missing-data
   predictions, and the test log-likelihood of DP-GP-LVM.
@@ -93,5 +95,3 @@ proposes a fix. The item numbers are the numbers in that document. "Fixed" under
   Confidence: medium-high.
 - **Item 5.** The test bound is a separate collapsed bound on the test data. All four papers use one collapsed bound on
   the training data augmented with the test data. Confidence that this departs from the papers: high.
-- **Item 6.** For MRD missing data, every unobserved view uses the training term of the last view. Confidence: very
-  high. It has no effect when only the last view is unobserved.

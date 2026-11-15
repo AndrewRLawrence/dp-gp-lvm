@@ -13,7 +13,7 @@ import torch
 from helpers import kernel_columns, matching_dp_gp_lvm, randomise
 from synthetic import smooth_data
 
-from dp_gp_lvm import DPGPLVM, BayesianGPLVM
+from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM
 
 N, N_TEST, D, D_OBS, M, Q, T = 15, 4, 5, 3, 4, 2, 3
 
@@ -69,3 +69,23 @@ def test_dp_gp_lvm_with_one_component_has_the_test_bounds_of_the_bayesian_gplvm(
             expected = getattr(bgplvm, method)(y, mean, variance)
             actual = getattr(model, method)(y, mean, variance)
             torch.testing.assert_close(actual.lower_bound, expected.lower_bound, rtol=1e-12, atol=1e-9)
+
+
+def test_mrd_predicts_each_view_with_its_own_kernel(
+    data: tuple[np.ndarray, np.ndarray], test_latents: tuple[torch.Tensor, torch.Tensor], rng: np.random.Generator
+) -> None:
+    """Item 6: each unobserved view has its own kernel, inducing inputs, and training term, as in [C] section 4."""
+    y_train, y_test = data
+    model = MRD([y_train[:, :2], y_train[:, 2:4], y_train[:, 4:]], Q, M, seed=0)
+    randomise(model, rng)
+    mean, variance = test_latents
+    with torch.no_grad():
+        bound = model.missing_data_bound([y_test[:, :2]], mean, variance)
+    x_mean, x_var = numpy_latents(model)
+    columns = kernel_columns(model)
+    for view, (start, stop) in enumerate([(2, 4), (4, 5)], start=1):
+        x_u, gamma, alpha, beta = columns[start]
+        expected_mean, _ = oracles.predictive_moments(
+            y_train[:, start:stop], x_mean, x_var, x_u, gamma, alpha, beta, mean.numpy(), variance.numpy()
+        )
+        np.testing.assert_allclose(bound.means[view - 1].numpy(), expected_mean, rtol=1e-8, atol=1e-10)

@@ -139,13 +139,13 @@ def _test_free_energy(state: _ViewState, stats: _TestStats, y: torch.Tensor) -> 
 
 
 def _predict_view(
-    state: _ViewState, terms: _TestStats, c_train: torch.Tensor, y_unobserved: torch.Tensor
+    state: _ViewState, terms: _TestStats, y_unobserved: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one."""
     beta = state.beta
     num_test = terms.psi_1.shape[1]
     c_predict = solve_lower(state.l_a, terms.l_uu_inv_psi_1_t)
-    mean = beta * ((transpose(c_predict) @ c_train).squeeze(0) @ y_unobserved)
+    mean = beta * ((transpose(c_predict) @ state.c).squeeze(0) @ y_unobserved)
     posterior, difference = predictive_operators(state.l_uu, state.l_a)
     g = terms.psi_2 - transpose(terms.psi_1) @ terms.psi_1
     scale_du = posterior @ transpose(state.psi_1)
@@ -325,7 +325,7 @@ class BayesianGPLVM(LatentVariableModel):
         f_hat_test = _test_free_energy(state, stats, y)
         kl_test = kl_standard_normal(test_mean, test_variance)
         lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        mean, covariance = _predict_view(state, stats, state.c, self.y_train[:, num_observed:])
+        mean, covariance = _predict_view(state, stats, self.y_train[:, num_observed:])
         return MissingDataBound(lower_bound, mean, covariance)
 
     def predict_new_latent_variables(
@@ -630,11 +630,9 @@ class MRD(LatentVariableModel):
         """
         views = self._check_views(views_observed, partial=True)
         states, stats, lower_bound = self._test_bound(views, test_mean, test_variance)
-        # NOTE(legacy): every unobserved view uses the training C of the last view. See CHANGELOG.md, known issue 6.
-        c_last = states[-1].c
         means, covariances = [], []
         for v in range(len(views), self.number_of_views):
-            mean, covariance = _predict_view(states[v], stats[v], c_last, self.views_train[v])
+            mean, covariance = _predict_view(states[v], stats[v], self.views_train[v])
             means.append(mean)
             covariances.append(covariance)
         return ViewsMissingDataBound(lower_bound, means, covariances)
