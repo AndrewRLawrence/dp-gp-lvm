@@ -1,0 +1,206 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_COLOR: "1"
+  MPLBACKEND: Agg
+  UV_PYTHON_PREFERENCE: only-managed
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+      - name: Check that uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install
+        run: uv sync --locked
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Lint (includes the flake8-bandit security rules)
+        run: uv run ruff check --output-format=github .
+      - name: Check types
+        run: uv run ty check --output-format github
+      - name: Run the other pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+        env:
+          SKIP: ruff-check,ruff-format,ty,uv-lock
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # Codecov uploads with OIDC, so the repository needs no token secret.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14", "3.15"]
+        include:
+          - os: macos-latest
+            python-version: "3.15"
+          - os: windows-latest
+            python-version: "3.15"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Run the fast tests with coverage
+        run: >-
+          uv run pytest -m "not slow and not experiments"
+          --cov --cov-report=xml --cov-report=term
+          --junitxml=junit.xml -o junit_family=legacy
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage.xml
+          flags: ${{ matrix.os }}-py${{ matrix.python-version }}
+          fail_ci_if_error: false
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          report_type: test_results
+          files: junit.xml
+          fail_ci_if_error: false
+      - name: Keep the JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: junit.xml
+
+  slow:
+    name: Slow tests and experiments
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Run the slow tests and the experiment smoke tests
+        run: uv run pytest -m "slow or experiments" --junitxml=junit.xml -o junit_family=legacy
+      - name: Keep the JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-slow
+          path: junit.xml
+
+  min-deps:
+    name: Minimum dependency versions (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install the lowest allowed versions of the direct dependencies
+        run: uv sync --resolution lowest-direct
+      - name: Show the versions
+        run: uv pip list
+      - name: Run the fast tests
+        run: uv run --no-sync pytest -m "not slow and not experiments"
+
+  build:
+    name: Build the distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+      - name: Build the sdist and the wheel
+        run: uv build
+      - name: Check the metadata
+        run: uvx twine check --strict dist/*
+      - name: Check that the wheel contains only the package
+        run: |
+          unzip -Z1 dist/*.whl | tee wheel-files.txt
+          if grep -Ev '^dp_gp_lvm(/|-[0-9.]+\.dist-info/)' wheel-files.txt; then
+            echo "The wheel contains files outside the package."
+            exit 1
+          fi
+      - name: Keep the distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+
+  badges:
+    name: Update the test badge
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [test, slow]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # The job pushes the badge data to the orphan "badges" branch.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get the JUnit reports of one platform
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: junit-{ubuntu-latest-py3.15,slow}
+          path: reports
+      - name: Write the badge data
+        run: python3 scripts/ci/junit_badge.py --output tests.json reports/*/junit.xml
+      - name: Push the badge data to the badges branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir badge-branch
+          cp tests.json badge-branch/
+          cd badge-branch
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests.json
+          git commit -q -m "Update the test badge for ${GITHUB_SHA}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

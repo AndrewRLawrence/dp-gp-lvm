@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-plot = ["matplotlib>=3.10,<4"]
+plot = ["matplotlib>=3.10.7,<4"]
 
 [project.urls]
 Homepage = "https://github.com/AndrewRLawrence/dp-gp-lvm"
@@ -58,7 +58,7 @@ lint = [
     "ty>=0.0.104,<0.1",
 ]
 experiments = [
-    "matplotlib>=3.10,<4",
+    "matplotlib>=3.10.7,<4",
     "scipy>=1.15,<2",
 ]
 dev = [
