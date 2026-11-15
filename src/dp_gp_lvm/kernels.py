@@ -166,15 +166,20 @@ class ARDRBFKernel:
         -------
         torch.Tensor
             The statistic, with the shape ``(B, N, M)``.
+
+        Notes
+        -----
+        A batched matrix product calculates the sum over the latent dimensions. The squared distances ``(N, Q, M)``
+        do not depend on the kernel batch. Thus, the intermediate tensors have the shapes ``(N, B, Q)``,
+        ``(N, Q, M)``, and ``(N, B, M)``. The legacy code made a ``(B, N, M, Q)`` tensor. Each term is the same.
+        Only the order of the operations is different.
         """
-        gamma_b1q = self.ard_weights.unsqueeze(1)
-        gamma_b11q = gamma_b1q.unsqueeze(1)
-        denominator = (gamma_b1q * latent_variance.unsqueeze(0) + 1.0).unsqueeze(2)
-        numerator = gamma_b11q * ((latent_mean.unsqueeze(1) - inducing_input.unsqueeze(0)) ** 2).unsqueeze(0)
-        log_psi_1 = torch.log(self.signal_variance.unsqueeze(-1)) - 0.5 * (
-            numerator / denominator + torch.log(denominator)
-        ).sum(dim=-1)
-        return torch.exp(log_psi_1)
+        gamma_1bq = self.ard_weights.unsqueeze(0)
+        denominator = gamma_1bq * latent_variance.unsqueeze(1) + 1.0  # (N, B, Q)
+        squared_distance = (latent_mean.unsqueeze(-1) - inducing_input.T) ** 2  # (N, Q, M)
+        log_scale = torch.log(self.signal_variance.T) - 0.5 * torch.log(denominator).sum(dim=-1)  # (N, B)
+        log_psi_1 = torch.baddbmm(log_scale.unsqueeze(-1), gamma_1bq / denominator, squared_distance, alpha=-0.5)
+        return torch.exp(log_psi_1).transpose(0, 1).contiguous()
 
     def psi_2(
         self, inducing_input: torch.Tensor, latent_mean: torch.Tensor, latent_variance: torch.Tensor
@@ -194,22 +199,26 @@ class ARDRBFKernel:
         -------
         torch.Tensor
             The statistic, with the shape ``(B, M, M)``.
+
+        Notes
+        -----
+        The function puts the pairs of inducing inputs on one axis of length ``M * M``. A batched matrix product then
+        calculates the sum over the latent dimensions. The squared distances ``(N, Q, M * M)`` do not depend on the
+        kernel batch. Thus, the intermediate tensors have the shapes ``(N, B, Q)``, ``(N, Q, M * M)``, and
+        ``(N, B, M * M)``. The legacy code made a ``(B, N, M, M, Q)`` tensor. Each term is the same. Only the order
+        of the operations is different.
         """
-        # NOTE(legacy): this keeps the (B, N, M, M, Q) intermediate of the legacy code for exact parity.
-        alpha_b111 = self.signal_variance.unsqueeze(-1).unsqueeze(-1)
-        gamma_b111q = self.ard_weights.unsqueeze(1).unsqueeze(1).unsqueeze(1)
-        mean_1n11q = latent_mean.unsqueeze(0).unsqueeze(-2).unsqueeze(-2)
-        var_1n11q = latent_variance.unsqueeze(0).unsqueeze(-2).unsqueeze(-2)
-        x_u_1mq = inducing_input.unsqueeze(0)
-        x_u_11m1q = x_u_1mq.unsqueeze(-2).unsqueeze(0)
-        x_u_111mq = x_u_1mq.unsqueeze(0).unsqueeze(0)
-
-        x_u_bar = 0.5 * (x_u_11m1q + x_u_111mq)
-        term_1 = 0.25 * gamma_b111q * (x_u_11m1q - x_u_111mq) ** 2
-        denominator = 2.0 * gamma_b111q * var_1n11q + 1.0
-        numerator = gamma_b111q * (mean_1n11q - x_u_bar) ** 2
-
-        log_psi_2 = 2.0 * torch.log(alpha_b111) - (0.5 * torch.log(denominator) + term_1 + numerator / denominator).sum(
-            dim=-1
-        )
-        return torch.exp(log_psi_2).sum(dim=1)
+        gamma = self.ard_weights
+        num_kernels, num_latent_dims = gamma.shape
+        num_inducing = inducing_input.shape[0]
+        gamma_1bq = gamma.unsqueeze(0)
+        denominator = 2.0 * gamma_1bq * latent_variance.unsqueeze(1) + 1.0  # (N, B, Q)
+        x_u_m1q, x_u_1mq = inducing_input.unsqueeze(1), inducing_input.unsqueeze(0)
+        pair_distance = (0.25 * (x_u_m1q - x_u_1mq) ** 2).reshape(-1, num_latent_dims).T  # (Q, M * M)
+        x_u_bar = (0.5 * (x_u_m1q + x_u_1mq)).reshape(-1, num_latent_dims).T  # (Q, M * M)
+        mean_distance = (latent_mean.unsqueeze(-1) - x_u_bar) ** 2  # (N, Q, M * M)
+        log_scale = 2.0 * torch.log(self.signal_variance.T) - 0.5 * torch.log(denominator).sum(dim=-1)  # (N, B)
+        log_psi_2 = torch.baddbmm(-(gamma @ pair_distance), gamma_1bq / denominator, mean_distance, alpha=-1.0)
+        # The in-place addition keeps only one (N, B, M * M) tensor in memory before the exponential.
+        log_psi_2 += log_scale.unsqueeze(-1)
+        return torch.exp(log_psi_2).sum(dim=0).reshape(num_kernels, num_inducing, num_inducing)

@@ -113,6 +113,99 @@ def test_psi_statistics_reduce_to_the_kernel_at_zero_variance(setup: dict[str, n
     torch.testing.assert_close(kernel.psi_2(x_u, mean, var), k_fu.transpose(-2, -1) @ k_fu)
 
 
+def psi_1_broadcast(
+    gamma: torch.Tensor, alpha: torch.Tensor, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor
+) -> torch.Tensor:
+    """The direct formula of the legacy code, with a (B, N, M, Q) intermediate tensor."""
+    gamma_b11q = gamma[:, None, None, :]
+    denominator = gamma_b11q * var[None, :, None, :] + 1.0
+    numerator = gamma_b11q * (mean[None, :, None, :] - x_u[None, None, :, :]) ** 2
+    log_psi_1 = torch.log(alpha)[:, :, None] - 0.5 * (numerator / denominator + torch.log(denominator)).sum(dim=-1)
+    return torch.exp(log_psi_1)
+
+
+def psi_2_broadcast(
+    gamma: torch.Tensor, alpha: torch.Tensor, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor
+) -> torch.Tensor:
+    """The direct formula of the legacy code, with a (B, N, M, M, Q) intermediate tensor."""
+    gamma_b111q = gamma[:, None, None, None, :]
+    x_u_k, x_u_l = x_u[None, None, :, None, :], x_u[None, None, None, :, :]
+    denominator = 2.0 * gamma_b111q * var[None, :, None, None, :] + 1.0
+    exponent = (
+        0.5 * torch.log(denominator)
+        + 0.25 * gamma_b111q * (x_u_k - x_u_l) ** 2
+        + gamma_b111q * (mean[None, :, None, None, :] - 0.5 * (x_u_k + x_u_l)) ** 2 / denominator
+    )
+    return torch.exp(2.0 * torch.log(alpha)[:, :, None, None] - exponent.sum(dim=-1)).sum(dim=1)
+
+
+def random_inputs(
+    rng: np.random.Generator, b: int, n: int, m: int, q: int, scale: float = 0.5
+) -> tuple[torch.Tensor, ...]:
+    """Return (gamma, alpha, x_u, mean, var) with float64 gradients."""
+    values = (
+        np.exp(scale * rng.standard_normal((b, q))),
+        np.exp(0.5 * rng.standard_normal((b, 1))),
+        1.5 * rng.standard_normal((m, q)),
+        1.5 * rng.standard_normal((n, q)),
+        np.exp(0.5 * rng.standard_normal((n, q))),
+    )
+    return tuple(t(v).requires_grad_(True) for v in values)
+
+
+def psi_statistics(gamma: torch.Tensor, alpha: torch.Tensor, *latents: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    kernel = ARDRBFKernel(gamma, alpha, torch.ones_like(alpha))
+    return kernel.psi_1(*latents), kernel.psi_2(*latents)
+
+
+@pytest.mark.parametrize("scale", [0.5, 2.0])
+@pytest.mark.parametrize(("b", "n", "m", "q"), [(1, 7, 5, 3), (3, 7, 5, 3), (4, 6, 3, 8)])
+def test_psi_statistics_and_gradients_match_the_broadcast_formula(
+    rng: np.random.Generator, b: int, n: int, m: int, q: int, scale: float
+) -> None:
+    """The batched matrix products must give the values and gradients of the direct formula of the legacy code."""
+    inputs = random_inputs(rng, b, n, m, q, scale)
+    actual = psi_statistics(*inputs)
+    expected = (psi_1_broadcast(*inputs), psi_2_broadcast(*inputs))
+    for ours, reference in zip(actual, expected, strict=True):
+        assert ours.shape == reference.shape
+        assert ours.is_contiguous()
+        torch.testing.assert_close(ours, reference, rtol=1e-12, atol=1e-15)
+        weights = t(rng.standard_normal(reference.shape))
+        ours_grad = torch.autograd.grad((weights * ours).sum(), inputs)
+        reference_grad = torch.autograd.grad((weights * reference).sum(), inputs)
+        for g_ours, g_reference in zip(ours_grad, reference_grad, strict=True):
+            torch.testing.assert_close(g_ours, g_reference, rtol=1e-11, atol=1e-13)
+
+
+@pytest.mark.parametrize("b", [1, 3])
+def test_psi_statistics_pass_gradcheck(rng: np.random.Generator, b: int) -> None:
+    inputs = random_inputs(rng, b, 4, 3, 2)
+    assert torch.autograd.gradcheck(psi_statistics, inputs)
+    assert torch.autograd.gradgradcheck(psi_statistics, inputs)
+
+
+def test_psi_statistics_do_not_save_the_legacy_intermediate_tensors(rng: np.random.Generator) -> None:
+    """Autograd must not keep a (B, N, M, Q) tensor for Psi-1 or a (B, N, M, M, Q) tensor for Psi-2.
+
+    With these sizes, the largest tensor that each statistic needs is (N, B, M) or (N, B, M * M).
+    """
+    b, n, m, q = 3, 5, 4, 2
+    gamma, alpha, *latents = random_inputs(rng, b, n, m, q)
+    kernel = ARDRBFKernel(gamma, alpha, torch.ones_like(alpha))
+    for statistic, largest in ((kernel.psi_1, n * b * m), (kernel.psi_2, n * b * m * m)):
+        sizes: list[int] = []
+
+        def pack(tensor: torch.Tensor, sizes: list[int] = sizes) -> torch.Tensor:
+            sizes.append(tensor.numel())
+            return tensor
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+            statistic(*latents)
+        assert sizes
+        assert max(sizes) == largest
+
+
 def test_prior_log_likelihood_matches_oracle(setup: dict[str, np.ndarray]) -> None:
     expected = sum(np.sum(oracles.log_normal_log_pdf(setup[k])) for k in ("gamma", "alpha", "beta"))
     np.testing.assert_allclose(float(kernel_of(setup).prior_log_likelihood), expected)
