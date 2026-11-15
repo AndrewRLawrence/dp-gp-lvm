@@ -47,6 +47,10 @@ golden values.
 - Item 3: all models return the approximate test log-likelihood `F(q(X, X*)) − F(q(X))` of the BGP-LVM papers.
   Before, the Bayesian GP-LVM returned `F̂* − F̂`, and MRD returned none. `NewDataBound.test_log_likelihood` is now
   always a tensor. The value of DP-GP-LVM does not change. No experiment uses the value of the Bayesian GP-LVM or MRD.
+- Item 4: with `mask_size > 1`, the DP terms `E[log p(Z|V)]` and `H[q(Z)]` count each shared assignment once. They
+  use the `D / mask_size` free rows of Φ. Before, they counted each assignment `mask_size` times, so the DP prior and
+  the entropy were too strong. The fix changes the training objective when `mask_size > 1`, for example in
+  `experiments.cmu_swapped_legs`.
 - Item 5: the test bound is one collapsed bound on the training data augmented with the test data, as in the BGP-LVM,
   MRD, and DP-GP-LVM papers. The statistics are `ψ0 + ψ0*`, `[Ψ1; Ψ1*]`, and `Ψ2 + Ψ2*`. For missing data, the
   observed dimensions use this bound, and the unobserved dimensions keep their training terms (eq. (52) of the journal
@@ -95,9 +99,5 @@ keeps the legacy version.
 
 ### Known issues
 
-The port copies these legacy behaviours, so the parity tests pass. Each one has a `NOTE(legacy)` comment in the code.
-[docs/legacy-quirks.md](docs/legacy-quirks.md) compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers and
-proposes a fix. The item numbers are the numbers in that document. "Fixed" under "Unreleased" gives the fixed items.
-
-- **Item 4.** With `mask_size > 1`, the DP terms count every row of Φ. Only `D / mask_size` rows are free.
-  Confidence: medium-high.
+The port copies seven legacy behaviours, so the parity tests pass. [docs/legacy-quirks.md](docs/legacy-quirks.md)
+compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers. "Fixed" under "Unreleased" gives the fixes.

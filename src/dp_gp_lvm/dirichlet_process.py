@@ -34,7 +34,8 @@ class DirichletProcess(nn.Module):
 
     The variational distributions are:
 
-    - q(Z): a categorical distribution for each item, with probabilities ``assignments`` (``Φ``).
+    - q(Z): a categorical distribution for each item, with probabilities ``assignments`` (``Φ``). With
+      ``mask_size > 1``, each block of ``mask_size`` adjacent items has one assignment.
     - q(V): a beta distribution for each of the first ``T - 1`` stick lengths.
     - q(α): a gamma distribution for the concentration parameter.
 
@@ -47,7 +48,8 @@ class DirichletProcess(nn.Module):
     alpha_prior_params : sequence of float, default (1.0, 1.0)
         The shape and the rate of the gamma prior on the concentration parameter.
     mask_size : int, default 1
-        The number of adjacent items that share one assignment. It must divide ``num_samples``.
+        The number of adjacent items that share one assignment. It must divide ``num_samples``. The lower bound
+        counts each shared assignment once.
     rng : numpy.random.Generator, optional
         The random generator for the initial values. If you do not give one, the class makes a new generator.
     dtype : torch.dtype, default torch.float64
@@ -117,19 +119,21 @@ class DirichletProcess(nn.Module):
     def elbo(self) -> torch.Tensor:
         """Return the evidence lower bound of the DP terms (supplemental eqs. 42 to 47).
 
+        The terms ``E[log p(Z|V)]`` and ``H[q(Z)]`` use one row of ``Φ`` for each assignment. With ``mask_size > 1``,
+        a block of items shares one assignment, so the bound counts it once.
+
         Returns
         -------
         torch.Tensor
             The lower bound as a scalar.
         """
-        phi = self.assignments
+        phi = torch.softmax(self.phi_logits, dim=-1)
         gamma_1, gamma_2 = self.q_v
         w_1, w_2 = self.q_alpha
         s_1, s_2 = self.alpha_prior[0], self.alpha_prior[1]
         digamma = torch.special.digamma
         digamma_sum = digamma(gamma_1 + gamma_2)
 
-        # NOTE(legacy): with mask_size > 1, these sums count every row of Φ. See CHANGELOG.md, known issue 4.
         ev_log_p_z_given_v = (
             phi[:, :-1] * (digamma(gamma_1) - digamma_sum)
             + _exclusive_reverse_cumsum(phi)[:, :-1] * (digamma(gamma_2) - digamma_sum)

@@ -123,7 +123,8 @@ class DPGPLVM(LatentVariableModel):
         The shape and the rate of the gamma prior on the DP concentration parameter.
     mask_size : int, default 1
         The number of adjacent observed dimensions that share one group assignment. It must divide ``D``.
-        For example, use 2 for (x, y) coordinates or 3 for (x, y, z) coordinates.
+        For example, use 2 for (x, y) coordinates or 3 for (x, y, z) coordinates. The DP terms of the lower bound
+        count each shared assignment once.
     expectation : {"plug_in", "mixture"}, default "plug_in"
         How the GP bound uses q(Z).
 
