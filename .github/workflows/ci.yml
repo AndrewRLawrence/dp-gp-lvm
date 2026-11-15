@@ -136,8 +136,12 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+      # The lock file is universal, so it cannot skip the plain torch versions of the CPU index that have no Linux
+      # wheels. A platform-specific uv pip resolution skips them and picks the "+cpu" builds.
       - name: Install the lowest allowed versions of the direct dependencies
-        run: uv sync --resolution lowest-direct
+        run: |
+          uv venv --python 3.12
+          uv pip install --resolution lowest-direct --group dev -e .
       - name: Show the versions
         run: uv pip list
       - name: Run the fast tests

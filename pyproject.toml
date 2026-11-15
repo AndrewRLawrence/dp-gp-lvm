@@ -138,7 +138,11 @@ testpaths = ["tests"]
 pythonpath = [".", "tests"]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # The virtual GPU of the macOS CI runners does not support Metal 2.0. PyTorch warns about it at the first device query.
+    "ignore:Skipping device Apple Paravirtual device:UserWarning",
+]
 markers = [
     "slow: training tests that take more than a few seconds",
     "parity: comparisons with the legacy TensorFlow 1.15 golden values",
