@@ -15,13 +15,12 @@ import torch
 from torch import nn
 
 from dp_gp_lvm._base import DEFAULT_INDUCING_POINTS, DEFAULT_LATENT_DIMS, LatentVariableModel, check_positive_int
-from dp_gp_lvm._bound import cholesky_a, predictive_operators, whiten
+from dp_gp_lvm._bound import cholesky_a, predictive_variance, whiten
 from dp_gp_lvm._numerics import (
     DTYPE,
     ArrayInput,
     as_numpy,
     as_tensor,
-    batch_eye,
     inverse_softplus,
     positive,
     solve_lower,
@@ -139,22 +138,23 @@ def _test_free_energy(state: _ViewState, stats: _TestStats, y: torch.Tensor) -> 
 
 
 def _predict_view(
-    state: _ViewState, terms: _TestStats, y_unobserved: torch.Tensor
+    state: _ViewState,
+    terms: _TestStats,
+    x_u: torch.Tensor,
+    test_mean: torch.Tensor,
+    test_variance: torch.Tensor,
+    y_unobserved: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one."""
-    beta = state.beta
-    num_test = terms.psi_1.shape[1]
+    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one.
+
+    Each covariance matrix is diagonal. The diagonal holds the predictive variance of each test point.
+    """
     c_predict = solve_lower(state.l_a, terms.l_uu_inv_psi_1_t)
-    mean = beta * ((transpose(c_predict) @ state.c).squeeze(0) @ y_unobserved)
-    posterior, difference = predictive_operators(state.l_uu, state.l_a)
-    g = terms.psi_2 - transpose(terms.psi_1) @ terms.psi_1
-    scale_du = posterior @ transpose(state.psi_1)
-    scale_du_yu = scale_du.squeeze(0) @ y_unobserved
-    yu_variance = beta.squeeze(0) ** 2 * torch.diagonal(transpose(scale_du_yu) @ (g.squeeze(0) @ scale_du_yu))
-    trace_term = batch_trace(difference @ terms.psi_2)
-    eye = batch_eye(num_test, 1, beta)
-    covariance = yu_variance[:, None, None] + (terms.psi_0 + torch.reciprocal(beta) - trace_term) * eye
-    return mean, covariance
+    mean = state.beta * ((transpose(c_predict) @ state.c).squeeze(0) @ y_unobserved)
+    variance = predictive_variance(
+        state.kernel, state.l_uu, state.l_a, state.psi_1, y_unobserved.unsqueeze(0), x_u, test_mean, test_variance
+    )
+    return mean, torch.diag_embed(variance.squeeze(1).T)
 
 
 class BayesianGPLVM(LatentVariableModel):
@@ -315,6 +315,16 @@ class BayesianGPLVM(LatentVariableModel):
             The joint lower bound and the predictive distribution of the other ``D - Do`` dimensions.
         """
         y = self._tensor(y_observed)
+        state, stats, lower_bound = self._missing_bound(y, test_mean, test_variance)
+        mean, covariance = _predict_view(
+            state, stats, self.x_u, test_mean, test_variance, self.y_train[:, y.shape[1] :]
+        )
+        return MissingDataBound(lower_bound, mean, covariance)
+
+    def _missing_bound(
+        self, y: torch.Tensor, test_mean: torch.Tensor, test_variance: torch.Tensor
+    ) -> tuple[_ViewState, _TestStats, torch.Tensor]:
+        """Return the training state, the test statistics, and the lower bound for partly observed test data."""
         num_observed = y.shape[1]
         if not 0 < num_observed < self.y_train.shape[1]:
             msg = "The number of observed test dimensions must be less than the number of training dimensions."
@@ -324,9 +334,7 @@ class BayesianGPLVM(LatentVariableModel):
         stats = _test_stats(state, self.x_u, test_mean, test_variance)
         f_hat_test = _test_free_energy(state, stats, y)
         kl_test = kl_standard_normal(test_mean, test_variance)
-        lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        mean, covariance = _predict_view(state, stats, self.y_train[:, num_observed:])
-        return MissingDataBound(lower_bound, mean, covariance)
+        return state, stats, state.f_hat + f_hat_test - kl - kl_test
 
     def predict_new_latent_variables(
         self,
@@ -403,7 +411,7 @@ class BayesianGPLVM(LatentVariableModel):
         y = self._tensor(y_observed)
         reference = self.y_train[:, : y.shape[1]]
         latents, history = self.fit_test_latents(
-            lambda m, v: self.missing_data_bound(y, m, v).lower_bound,
+            lambda m, v: self._missing_bound(y, m, v)[2],
             reference,
             y,
             iterations=iterations,
@@ -632,7 +640,9 @@ class MRD(LatentVariableModel):
         states, stats, lower_bound = self._test_bound(views, test_mean, test_variance)
         means, covariances = [], []
         for v in range(len(views), self.number_of_views):
-            mean, covariance = _predict_view(states[v], stats[v], self.views_train[v])
+            mean, covariance = _predict_view(
+                states[v], stats[v], self.x_us[v], test_mean, test_variance, self.views_train[v]
+            )
             means.append(mean)
             covariances.append(covariance)
         return ViewsMissingDataBound(lower_bound, means, covariances)
@@ -713,7 +723,7 @@ class MRD(LatentVariableModel):
         views = self._check_views(views_observed, partial=True)
         reference = torch.hstack(self.views_train[: len(views)])
         latents, history = self.fit_test_latents(
-            lambda m, v: self.missing_data_bound(views, m, v).lower_bound,
+            lambda m, v: self._test_bound(views, m, v)[2],
             reference,
             torch.hstack(views),
             iterations=iterations,

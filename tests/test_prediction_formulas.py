@@ -6,6 +6,7 @@ The sources are Titsias and Lawrence (2010) [C], Damianou et al. (2016) [J], and
 
 from __future__ import annotations
 
+import legacy_reference
 import numpy as np
 import oracles
 import pytest
@@ -114,3 +115,73 @@ def test_mrd_predicts_each_view_with_its_own_kernel(
             y_train[:, start:stop], x_mean, x_var, x_u, gamma, alpha, beta, mean.numpy(), variance.numpy()
         )
         np.testing.assert_allclose(bound.means[view - 1].numpy(), expected_mean, rtol=1e-8, atol=1e-10)
+
+
+def _predict(
+    model, y_test: np.ndarray, mean: torch.Tensor, variance: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    with torch.no_grad():
+        if isinstance(model, MRD):
+            bound = model.missing_data_bound([y_test[:, :D_OBS]], mean, variance)
+            return bound.means[0], bound.covariances[0]
+        bound = model.missing_data_bound(y_test[:, :D_OBS], mean, variance)
+        return bound.mean, bound.covariance
+
+
+@pytest.mark.parametrize("name", ["bgplvm", "mrd", "dp_gp_lvm"])
+def test_predictive_variance_of_each_test_point(
+    data: tuple[np.ndarray, np.ndarray],
+    test_latents: tuple[torch.Tensor, torch.Tensor],
+    rng: np.random.Generator,
+    name: str,
+) -> None:
+    """Item 2: the formula of [C] section 4 and [J] eq. (41) is for one test point. Apply it to each test point."""
+    y_train, y_test = data
+    models = {
+        "bgplvm": lambda: BayesianGPLVM(y_train, Q, M, seed=0),
+        "mrd": lambda: MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0),
+        "dp_gp_lvm": lambda: DPGPLVM(y_train, Q, M, T, seed=0),
+    }
+    model = models[name]()
+    randomise(model, rng)
+    mean, variance = test_latents
+    predicted_mean, covariance = _predict(model, y_test, mean, variance)
+    assert covariance.shape == (D - D_OBS, N_TEST, N_TEST)
+    diagonal = torch.diagonal(covariance, dim1=-2, dim2=-1)
+    torch.testing.assert_close(covariance, torch.diag_embed(diagonal), rtol=0.0, atol=0.0)
+    x_mean, x_var = numpy_latents(model)
+    columns = kernel_columns(model)
+    # The Bayesian GP-LVM and MRD use one kernel for all unobserved dimensions. DP-GP-LVM uses one for each dimension.
+    groups = [range(D_OBS, D)] if name != "dp_gp_lvm" else [[d] for d in range(D_OBS, D)]
+    for dims in groups:
+        x_u, gamma, alpha, beta = columns[dims[0]]
+        expected_mean, expected_variance = oracles.predictive_moments(
+            y_train[:, list(dims)], x_mean, x_var, x_u, gamma, alpha, beta, mean.numpy(), variance.numpy()
+        )
+        columns_u = [d - D_OBS for d in dims]
+        np.testing.assert_allclose(predicted_mean[:, columns_u].numpy(), expected_mean, rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(diagonal[columns_u].T.numpy(), expected_variance, rtol=1e-8)
+
+
+@pytest.mark.parametrize("name", ["bgplvm", "mrd"])
+def test_one_test_point_gives_the_legacy_covariance(
+    data: tuple[np.ndarray, np.ndarray],
+    test_latents: tuple[torch.Tensor, torch.Tensor],
+    rng: np.random.Generator,
+    name: str,
+) -> None:
+    """For one test point, the legacy code is correct. Item 2 changes the covariance of two or more test points."""
+    y_train, y_test = data
+    if name == "bgplvm":
+        model = BayesianGPLVM(y_train, Q, M, seed=0)
+        y_observed = y_test[:1, :D_OBS]
+    else:
+        model = MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0)
+        y_observed = [y_test[:1, :D_OBS]]
+    randomise(model, rng)
+    mean, variance = (v[:1] for v in test_latents)
+    _, covariance = _predict(model, y_test[:1], mean, variance)
+    with torch.no_grad():
+        legacy = legacy_reference.missing_data_bound(model, y_observed, mean, variance)
+    expected = legacy.covariance if name == "bgplvm" else legacy.covariances[0]
+    torch.testing.assert_close(covariance, expected, rtol=1e-10, atol=1e-12)

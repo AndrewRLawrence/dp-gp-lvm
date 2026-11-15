@@ -16,12 +16,11 @@ import torch
 from torch import nn
 
 from dp_gp_lvm._base import DEFAULT_INDUCING_POINTS, DEFAULT_LATENT_DIMS, LatentVariableModel, check_positive_int
-from dp_gp_lvm._bound import cholesky_a, predictive_operators, whiten
+from dp_gp_lvm._bound import cholesky_a, predictive_variance, whiten
 from dp_gp_lvm._numerics import (
     DTYPE,
     ArrayInput,
     as_numpy,
-    batch_eye,
     inverse_softplus,
     positive,
     solve_lower,
@@ -367,6 +366,14 @@ class DPGPLVM(LatentVariableModel):
         """
         self._check_plug_in()
         y = self._tensor(y_observed)
+        state, lower_bound = self._missing_bound(y, test_mean, test_variance)
+        mean, covariance = self._predict_missing(state, y.shape[1], test_mean, test_variance)
+        return MissingDataBound(lower_bound, mean, covariance)
+
+    def _missing_bound(
+        self, y: torch.Tensor, test_mean: torch.Tensor, test_variance: torch.Tensor
+    ) -> tuple[_State, torch.Tensor]:
+        """Return the training state and the lower bound for partly observed test data."""
         num_test, num_observed = y.shape
         num_dims = self.y_train.shape[1]
         if not 0 < num_observed < num_dims:
@@ -375,8 +382,7 @@ class DPGPLVM(LatentVariableModel):
         state = self._state()
         kernel, beta = state.kernel, state.beta
         kl = self.kl_divergence()
-        y_unobserved = self.y_train[:, num_observed:]
-        beta_observed, beta_unobserved = beta[:num_observed], beta[num_observed:]
+        beta_observed = beta[:num_observed]
 
         psi_0 = kernel.psi_0(self.x_u, test_mean, test_variance)
         psi_1 = kernel.psi_1(self.x_u, test_mean, test_variance)
@@ -396,25 +402,30 @@ class DPGPLVM(LatentVariableModel):
             + 0.5 * ((y_beta_do1n @ c_t_c) @ transpose(y_beta_do1n)).sum()
         )
         kl_test = kl_standard_normal(test_mean, test_variance)
-        lower_bound = state.f_hat + f_hat_test - kl - kl_test
+        return state, state.f_hat + f_hat_test - kl - kl_test
 
-        c_predict = solve_lower(state.l_a, l_uu_inv_psi_1_t)
-        c_predict_c = (transpose(c_predict) @ state.c)[num_observed:]
-        y_unobserved_du_n1 = y_unobserved.T.unsqueeze(-1)
-        mean = (beta_unobserved * (c_predict_c @ y_unobserved_du_n1).squeeze(-1)).T
+    def _predict_missing(
+        self, state: _State, num_observed: int, test_mean: torch.Tensor, test_variance: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the predictive mean ``(N*, Du)`` and the diagonal covariances ``(Du, N*, N*)``.
 
-        posterior, difference = predictive_operators(state.l_uu, state.l_a)
-        g = (psi_2 - transpose(psi_1) @ psi_1)[num_observed:]
-        scale_du_yu = (posterior @ transpose(state.psi_1))[num_observed:] @ y_unobserved_du_n1
-        yu_variance = beta_unobserved**2 * (transpose(scale_du_yu) @ (g @ scale_du_yu)).squeeze(-1)
-        trace_term = batch_trace(difference @ psi_2).unsqueeze(-1)[num_observed:]
-        eye = batch_eye(num_test, num_dims - num_observed, beta)
-        # NOTE(legacy): the statistics are sums over all test points. See CHANGELOG.md, known issue 2.
-        covariance = (
-            yu_variance.unsqueeze(-1)
-            + (psi_0[num_observed:] + torch.reciprocal(beta_unobserved) - trace_term).unsqueeze(-1) * eye
+        Each unobserved dimension uses its own kernel. The diagonal holds the variance of each test point.
+        """
+        unobserved = slice(num_observed, None)
+        kernel = state.kernel
+        kernel_u = ARDRBFKernel(
+            kernel.ard_weights[unobserved], kernel.signal_variance[unobserved], kernel.noise_precision[unobserved]
         )
-        return MissingDataBound(lower_bound, mean, covariance)
+        l_uu, l_a = state.l_uu[unobserved], state.l_a[unobserved]
+        y_unobserved_du_n1 = self.y_train[:, unobserved].T.unsqueeze(-1)
+        psi_1 = kernel_u.psi_1(self.x_u, test_mean, test_variance)
+        c_predict = solve_lower(l_a, solve_lower(l_uu, transpose(psi_1)))
+        c_predict_c = transpose(c_predict) @ state.c[unobserved]
+        mean = (kernel_u.noise_precision * (c_predict_c @ y_unobserved_du_n1).squeeze(-1)).T
+        variance = predictive_variance(
+            kernel_u, l_uu, l_a, state.psi_1[unobserved], y_unobserved_du_n1, self.x_u, test_mean, test_variance
+        )
+        return mean, torch.diag_embed(variance.squeeze(-1).T)
 
     def predict_new_latent_variables(
         self,
@@ -492,7 +503,7 @@ class DPGPLVM(LatentVariableModel):
         self._check_plug_in()
         y = self._tensor(y_observed)
         latents, history = self.fit_test_latents(
-            lambda m, v: self.missing_data_bound(y, m, v).lower_bound,
+            lambda m, v: self._missing_bound(y, m, v)[1],
             self.y_train[:, : y.shape[1]],
             y,
             iterations=iterations,

@@ -43,7 +43,8 @@ class MissingDataBound:
     mean : torch.Tensor
         The predictive mean of the unobserved dimensions, with the shape ``(N*, Du)``.
     covariance : torch.Tensor
-        The predictive covariance of each unobserved dimension, with the shape ``(Du, N*, N*)``.
+        The predictive covariance of each unobserved dimension, with the shape ``(Du, N*, N*)``. Each matrix is
+        diagonal. The diagonal holds the predictive variance of each test point.
     """
 
     lower_bound: torch.Tensor
@@ -62,7 +63,8 @@ class ViewsMissingDataBound:
     means : list of torch.Tensor
         The predictive mean of each unobserved view, each with the shape ``(N*, Dv)``.
     covariances : list of torch.Tensor
-        The predictive covariances of each unobserved view, each with the shape ``(Dv, N*, N*)``.
+        The predictive covariances of each unobserved view, each with the shape ``(Dv, N*, N*)``. Each matrix is
+        diagonal. The diagonal holds the predictive variance of each test point.
     """
 
     lower_bound: torch.Tensor

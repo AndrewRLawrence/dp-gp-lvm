@@ -39,6 +39,11 @@ golden values.
 - Item 1: the DP-GP-LVM predictive variance subtracts the trace term `tr[(K_uu⁻¹ − (K_uu + βΨ2)⁻¹) Ψ2*]`, as in the
   BGP-LVM papers and the BGP-LVM and MRD code. Before, DP-GP-LVM added it. The fix makes the DP-GP-LVM predictive
   variance smaller, so the missing-data log-likelihoods change.
+- Item 2: the predictive covariance uses the statistics ψ0\*, ψ1\*, and Ψ2\* of each test point, as in the formula
+  for one test point of the BGP-LVM papers. Each covariance matrix `(N*, N*)` is diagonal, with the predictive
+  variance of each test point. Before, the statistics were sums over all test points, so the variance grew with N\*,
+  and a constant term coupled all test points. The fix changes the predictive covariances of all models when N\* > 1,
+  so all missing-data log-likelihoods change.
 - Item 6: MRD predicts each unobserved view with the training term of that view. Before, every unobserved view used
   the term of the last view. The fix has no effect when only the last view is unobserved, as in all the experiments.
 - Item 7: the DP-GP-LVM test bound has one trace term for each dimension, as in eq. (18) of the DP-GP-LVM
@@ -86,9 +91,6 @@ The port copies these legacy behaviours, so the parity tests pass. Each one has 
 [docs/legacy-quirks.md](docs/legacy-quirks.md) compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers and
 proposes a fix. The item numbers are the numbers in that document. "Fixed" under "Unreleased" gives the fixed items.
 
-- **Item 2.** The predictive covariance uses ψ0\* and Ψ2\* summed over all test points, and it adds one value for each
-  dimension to every entry of the N\* x N\* matrix. This follows the notation of the journal paper literally, but the
-  formula is for one test point. Confidence: medium-high.
 - **Item 3.** The test log-likelihood has two definitions. The Bayesian GP-LVM uses `F̂* − F̂`. DP-GP-LVM uses
   `F̂* − KL*`, which agrees with the papers when the bound of item 5 is used. Confidence that the BGP-LVM version is a
   bug: high.
