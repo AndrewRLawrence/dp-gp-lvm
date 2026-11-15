@@ -1,0 +1,174 @@
+[project]
+name = "dp-gp-lvm"
+version = "1.0.0"
+description = "DP-GP-LVM: a Bayesian non-parametric model that learns multivariate dependency structures (ICML 2019)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andrew R. Lawrence" }]
+requires-python = ">=3.12"
+keywords = [
+    "gaussian-process",
+    "dirichlet-process",
+    "latent-variable-model",
+    "variational-inference",
+    "bayesian-nonparametrics",
+    "pytorch",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+# Floors follow SPEC 0 (core packages from about the last two years). Caps sit at the next major version.
+# The CI min-deps job checks the floors. uv.lock pins the latest versions for development.
+dependencies = [
+    "numpy>=2.2,<3",
+    "torch>=2.6,<3",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.10.7,<4"]
+
+[project.urls]
+Homepage = "https://github.com/AndrewRLawrence/dp-gp-lvm"
+Repository = "https://github.com/AndrewRLawrence/dp-gp-lvm"
+Issues = "https://github.com/AndrewRLawrence/dp-gp-lvm/issues"
+Changelog = "https://github.com/AndrewRLawrence/dp-gp-lvm/blob/main/CHANGELOG.md"
+Paper = "https://proceedings.mlr.press/v97/lawrence19a.html"
+
+[dependency-groups]
+test = [
+    "hypothesis>=6.130,<7",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "scipy>=1.15,<2",
+]
+lint = [
+    "ruff>=0.17,<0.18",
+    "ty>=0.0.104,<0.1",
+]
+experiments = [
+    "matplotlib>=3.10.7,<4",
+    "scipy>=1.15,<2",
+]
+# The torch build for development in this repository. "cpu" is the default. To use CUDA on Linux or Windows, run
+# `uv sync --no-group cpu --group cuda`. These groups do not change the published package, which needs plain torch.
+cpu = ["torch>=2.6,<3"]
+cuda = ["torch>=2.6,<3"]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "experiments" },
+    "pre-commit>=4,<5",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
+
+# The "cpu" group uses CPU-only torch wheels on Linux. This keeps CUDA (several GB) out of development and CI.
+# The "cuda" group uses CUDA 13.2 wheels, which exist for Linux and Windows only. macOS always uses the PyPI wheels.
+# These settings apply to uv only. They do not change the published package metadata.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", group = "cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu132", group = "cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# The golden-value generator must run on Python 3.6 with TensorFlow 1.15, so ruff does not check it.
+extend-exclude = ["scripts/legacy_golden"]
+
+[tool.ruff.lint]
+select = [
+    "ANN",  # flake8-annotations
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "D",    # pydocstyle
+    "E",    # pycodestyle errors
+    "ERA",  # eradicate (commented-out code)
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "NPY",  # numpy-specific rules
+    "PERF", # perflint
+    "PT",   # flake8-pytest-style
+    "PTH",  # flake8-use-pathlib
+    "RUF",  # ruff-specific rules
+    "S",    # flake8-bandit (security)
+    "SIM",  # flake8-simplify
+    "T20",  # flake8-print
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+
+# Greek letters in docstrings name the symbols of the paper.
+allowed-confusables = ["α", "γ", "ν", "ρ"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "D", "S101"]
+"experiments/**" = ["T20"]
+"scripts/**" = ["T20"]
+
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = ["tests"]
+
+[tool.ty.src]
+include = ["src/dp_gp_lvm", "tests", "experiments", "scripts/ci"]
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+    "slow: training tests that take more than a few seconds",
+    "parity: comparisons with the legacy TensorFlow 1.15 golden values",
+    "experiments: smoke tests for the experiment scripts",
+]
+
+[tool.coverage.run]
+source = ["dp_gp_lvm"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+    "raise NotImplementedError",
+]
