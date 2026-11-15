@@ -409,10 +409,10 @@ class DPGPLVM(LatentVariableModel):
         yu_variance = beta_unobserved**2 * (transpose(scale_du_yu) @ (g @ scale_du_yu)).squeeze(-1)
         trace_term = batch_trace(difference @ psi_2).unsqueeze(-1)[num_observed:]
         eye = batch_eye(num_test, num_dims - num_observed, beta)
-        # NOTE(legacy): this adds the trace term, and BGP-LVM and MRD subtract it. See CHANGELOG.md, known issues 1, 2.
+        # NOTE(legacy): the statistics are sums over all test points. See CHANGELOG.md, known issue 2.
         covariance = (
             yu_variance.unsqueeze(-1)
-            + (psi_0[num_observed:] + torch.reciprocal(beta_unobserved) + trace_term).unsqueeze(-1) * eye
+            + (psi_0[num_observed:] + torch.reciprocal(beta_unobserved) - trace_term).unsqueeze(-1) * eye
         )
         return MissingDataBound(lower_bound, mean, covariance)
 

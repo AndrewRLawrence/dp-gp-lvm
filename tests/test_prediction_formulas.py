@@ -69,6 +69,31 @@ def test_dp_gp_lvm_with_one_component_has_the_test_bounds_of_the_bayesian_gplvm(
             expected = getattr(bgplvm, method)(y, mean, variance)
             actual = getattr(model, method)(y, mean, variance)
             torch.testing.assert_close(actual.lower_bound, expected.lower_bound, rtol=1e-12, atol=1e-9)
+        expected = bgplvm.missing_data_bound(y_test[:, :D_OBS], mean, variance)
+        actual = model.missing_data_bound(y_test[:, :D_OBS], mean, variance)
+    torch.testing.assert_close(actual.mean, expected.mean, rtol=1e-10, atol=1e-12)
+    torch.testing.assert_close(actual.covariance, expected.covariance, rtol=1e-10, atol=1e-12)
+
+
+def test_dp_gp_lvm_predictive_variance_of_one_test_point(
+    data: tuple[np.ndarray, np.ndarray], test_latents: tuple[torch.Tensor, torch.Tensor], rng: np.random.Generator
+) -> None:
+    """Item 1: [C] section 4 and [J] eq. (41) subtract the trace term. Each dimension uses its own kernel."""
+    y_train, y_test = data
+    model = DPGPLVM(y_train, Q, M, T, seed=0)
+    randomise(model, rng)
+    mean, variance = (v[:1] for v in test_latents)
+    with torch.no_grad():
+        bound = model.missing_data_bound(y_test[:1, :D_OBS], mean, variance)
+    x_mean, x_var = numpy_latents(model)
+    columns = kernel_columns(model)
+    for d in range(D_OBS, D):
+        x_u, gamma, alpha, beta = columns[d]
+        expected_mean, expected_variance = oracles.predictive_moments(
+            y_train[:, d : d + 1], x_mean, x_var, x_u, gamma, alpha, beta, mean.numpy(), variance.numpy()
+        )
+        np.testing.assert_allclose(bound.mean[:, d - D_OBS].numpy(), expected_mean[:, 0], rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(bound.covariance[d - D_OBS].numpy(), expected_variance, rtol=1e-8)
 
 
 def test_mrd_predicts_each_view_with_its_own_kernel(
