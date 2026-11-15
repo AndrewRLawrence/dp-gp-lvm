@@ -16,7 +16,7 @@ import torch
 from torch import nn
 
 from dp_gp_lvm._base import DEFAULT_INDUCING_POINTS, DEFAULT_LATENT_DIMS, LatentVariableModel, check_positive_int
-from dp_gp_lvm._bound import cholesky_a, predictive_variance, whiten
+from dp_gp_lvm._bound import cholesky_a, collapsed_factors, predictive_variance, whiten
 from dp_gp_lvm._numerics import (
     DTYPE,
     ArrayInput,
@@ -26,7 +26,6 @@ from dp_gp_lvm._numerics import (
     solve_lower,
     transpose,
 )
-from dp_gp_lvm._numerics import trace as batch_trace
 from dp_gp_lvm.dirichlet_process import DEFAULT_ALPHA_PRIOR, DEFAULT_TRUNCATION_LEVEL, DirichletProcess
 from dp_gp_lvm.distributions import kl_standard_normal, log_normal_log_pdf
 from dp_gp_lvm.kernels import ARDRBFKernel
@@ -43,16 +42,68 @@ type Expectation = Literal["plug_in", "mixture"]
 
 @dataclass(frozen=True)
 class _State:
-    """The training quantities that the objective and the predictions use."""
+    """The training quantities that the objective, the test bounds, and the predictions use."""
 
     kernel: ARDRBFKernel
     beta: torch.Tensor
     beta_d11: torch.Tensor
+    psi_0: torch.Tensor
     psi_1: torch.Tensor
+    psi_2: torch.Tensor
     l_uu: torch.Tensor
+    whitened: torch.Tensor
     l_a: torch.Tensor
     c: torch.Tensor
     f_hat: torch.Tensor
+
+
+def _kernel_subset(kernel: ARDRBFKernel, dims: slice) -> ARDRBFKernel:
+    """Return the kernels of some observed dimensions from the plug-in kernel batch."""
+    return ARDRBFKernel(kernel.ard_weights[dims], kernel.signal_variance[dims], kernel.noise_precision[dims])
+
+
+def _free_energy(
+    beta: torch.Tensor, l_a: torch.Tensor, whitened: torch.Tensor, psi_0: torch.Tensor, c: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
+    """Return the free energy ``Σ_d F̂_d`` (paper eq. 18). Column ``d`` of ``y`` uses kernel ``d`` of the batch.
+
+    The rows of ``y`` are the latent points of the statistics. :func:`collapsed_factors` gives ``whitened``, ``l_a``,
+    and ``c``.
+    """
+    num_samples, num_dims = y.shape
+    log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
+    c_t_c = transpose(c) @ c
+    y_beta_d1n = (y.T * beta).unsqueeze(1)
+    trace_whitened = torch.diagonal(whitened, dim1=-2, dim2=-1).sum(dim=-1, keepdim=True)
+    return (
+        0.5 * num_samples * (torch.log(beta).sum() - num_dims * _LOG_2PI)
+        - log_det_l_a
+        + 0.5 * (beta * (trace_whitened - psi_0)).sum()
+        - 0.5 * (beta * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
+        + 0.5 * ((y_beta_d1n @ c_t_c) @ transpose(y_beta_d1n)).sum()
+    )
+
+
+def _augmented_free_energy(
+    state: _State,
+    dims: slice,
+    x_u: torch.Tensor,
+    test_mean: torch.Tensor,
+    test_variance: torch.Tensor,
+    y_train: torch.Tensor,
+    y_test: torch.Tensor,
+) -> torch.Tensor:
+    """Return ``Σ_d F̂_d`` over some dimensions for the training data augmented with the test data.
+
+    The bound has the same form as the training bound (Damianou et al. 2016, section 4.1). The statistics of the
+    augmented data are the sums of the training statistics and the test statistics.
+    """
+    kernel = _kernel_subset(state.kernel, dims)
+    psi_0 = state.psi_0[dims] + kernel.psi_0(x_u, test_mean, test_variance)
+    psi_1 = torch.cat([state.psi_1[dims], kernel.psi_1(x_u, test_mean, test_variance)], dim=1)
+    psi_2 = state.psi_2[dims] + kernel.psi_2(x_u, test_mean, test_variance)
+    whitened, l_a, c = collapsed_factors(state.beta_d11[dims], state.l_uu[dims], psi_1, psi_2)
+    return _free_energy(state.beta[dims], l_a, whitened, psi_0, c, torch.cat([y_train, y_test]))
 
 
 class DPGPLVM(LatentVariableModel):
@@ -206,8 +257,6 @@ class DPGPLVM(LatentVariableModel):
 
     def _state(self) -> _State:
         """Return the plug-in training quantities (kernel batch ``D``)."""
-        y = self.y_train
-        num_samples, num_dims = y.shape
         kernel = self.kernel
         mean, var = self.latent_mean, self.latent_variance
         beta = kernel.noise_precision
@@ -216,21 +265,9 @@ class DPGPLVM(LatentVariableModel):
         psi_1 = kernel.psi_1(self.x_u, mean, var)
         psi_2 = kernel.psi_2(self.x_u, mean, var)
         l_uu = torch.linalg.cholesky(kernel.covariance_matrix(self.x_u, include_jitter=True))
-        whitened = whiten(l_uu, psi_2)
-        l_a = cholesky_a(beta_d11, whitened)
-        log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
-        c = solve_lower(l_a, solve_lower(l_uu, transpose(psi_1)))
-        c_t_c = transpose(c) @ c
-        y_beta_d1n = (y.T * beta).unsqueeze(1)
-        trace_whitened = torch.diagonal(whitened, dim1=-2, dim2=-1).sum(dim=-1, keepdim=True)
-        f_hat = (
-            0.5 * num_samples * (torch.log(beta).sum() - num_dims * _LOG_2PI)
-            - log_det_l_a
-            + 0.5 * (beta * (trace_whitened - psi_0)).sum()
-            - 0.5 * (beta * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
-            + 0.5 * ((y_beta_d1n @ c_t_c) @ transpose(y_beta_d1n)).sum()
-        )
-        return _State(kernel, beta, beta_d11, psi_1, l_uu, l_a, c, f_hat)
+        whitened, l_a, c = collapsed_factors(beta_d11, l_uu, psi_1, psi_2)
+        f_hat = _free_energy(beta, l_a, whitened, psi_0, c, self.y_train)
+        return _State(kernel, beta, beta_d11, psi_0, psi_1, psi_2, l_uu, whitened, l_a, c, f_hat)
 
     def _mixture_free_energy(self) -> torch.Tensor:
         """Return ``Σ_d Σ_t φ_dt F_d(θ_t)`` with the kernel batch ``T`` (the legacy ``dp_gp_lvm_t``)."""
@@ -321,28 +358,10 @@ class DPGPLVM(LatentVariableModel):
         """
         self._check_plug_in()
         y = self._tensor(y_test)
-        num_test, num_dims = y.shape
         state = self._state()
-        kernel, beta = state.kernel, state.beta
         kl = self.kl_divergence()
-        psi_0 = kernel.psi_0(self.x_u, test_mean, test_variance)
-        psi_1 = kernel.psi_1(self.x_u, test_mean, test_variance)
-        psi_2 = kernel.psi_2(self.x_u, test_mean, test_variance)
-        whitened = whiten(state.l_uu, psi_2)
-        l_a = cholesky_a(state.beta_d11, whitened)
-        log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
-        c = solve_lower(l_a, solve_lower(state.l_uu, transpose(psi_1)))
-        c_t_c = transpose(c) @ c
-        y_beta_d1n = y.T.unsqueeze(1) * state.beta_d11
-        f_hat_test = (
-            0.5 * num_test * (torch.log(beta).sum() - num_dims * _LOG_2PI)
-            - log_det_l_a
-            + 0.5 * (beta * (batch_trace(whitened).unsqueeze(-1) - psi_0)).sum()
-            - 0.5 * (beta * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
-            + 0.5 * ((y_beta_d1n @ c_t_c) @ transpose(y_beta_d1n)).sum()
-        )
-        kl_test = kl_standard_normal(test_mean, test_variance)
-        lower_bound = state.f_hat + f_hat_test - kl - kl_test
+        f_hat_joint = _augmented_free_energy(state, slice(None), self.x_u, test_mean, test_variance, self.y_train, y)
+        lower_bound = f_hat_joint - kl - kl_standard_normal(test_mean, test_variance)
         return NewDataBound(lower_bound, lower_bound - (state.f_hat - kl))
 
     def missing_data_bound(
@@ -373,49 +392,41 @@ class DPGPLVM(LatentVariableModel):
     def _missing_bound(
         self, y: torch.Tensor, test_mean: torch.Tensor, test_variance: torch.Tensor
     ) -> tuple[_State, torch.Tensor]:
-        """Return the training state and the lower bound for partly observed test data."""
-        num_test, num_observed = y.shape
-        num_dims = self.y_train.shape[1]
-        if not 0 < num_observed < num_dims:
+        """Return the training state and the lower bound for partly observed test data.
+
+        The observed dimensions use one bound on the augmented data. The unobserved dimensions use their training
+        terms (Damianou et al. 2016, eq. 52).
+        """
+        num_observed = y.shape[1]
+        if not 0 < num_observed < self.y_train.shape[1]:
             msg = "The number of observed test dimensions must be less than the number of training dimensions."
             raise ValueError(msg)
         state = self._state()
-        kernel, beta = state.kernel, state.beta
-        kl = self.kl_divergence()
-        beta_observed = beta[:num_observed]
-
-        psi_0 = kernel.psi_0(self.x_u, test_mean, test_variance)
-        psi_1 = kernel.psi_1(self.x_u, test_mean, test_variance)
-        psi_2 = kernel.psi_2(self.x_u, test_mean, test_variance)
-        whitened_observed = whiten(state.l_uu, psi_2)[:num_observed]
-        l_a = cholesky_a(beta_observed.unsqueeze(-1), whitened_observed)
-        log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
-        l_uu_inv_psi_1_t = solve_lower(state.l_uu, transpose(psi_1))
-        c = solve_lower(l_a, l_uu_inv_psi_1_t[:num_observed])
-        c_t_c = transpose(c) @ c
-        y_beta_do1n = (y.T * beta_observed).unsqueeze(1)
-        f_hat_test = (
-            0.5 * num_test * (torch.log(beta_observed).sum() - num_observed * _LOG_2PI)
-            - log_det_l_a
-            + 0.5 * (beta_observed * (batch_trace(whitened_observed).unsqueeze(-1) - psi_0[:num_observed])).sum()
-            - 0.5 * (beta_observed * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
-            + 0.5 * ((y_beta_do1n @ c_t_c) @ transpose(y_beta_do1n)).sum()
+        observed, unobserved = slice(None, num_observed), slice(num_observed, None)
+        f_hat_observed = _augmented_free_energy(
+            state, observed, self.x_u, test_mean, test_variance, self.y_train[:, observed], y
         )
-        kl_test = kl_standard_normal(test_mean, test_variance)
-        return state, state.f_hat + f_hat_test - kl - kl_test
+        f_hat_unobserved = _free_energy(
+            state.beta[unobserved],
+            state.l_a[unobserved],
+            state.whitened[unobserved],
+            state.psi_0[unobserved],
+            state.c[unobserved],
+            self.y_train[:, unobserved],
+        )
+        lower_bound = f_hat_observed + f_hat_unobserved - self.kl_divergence()
+        return state, lower_bound - kl_standard_normal(test_mean, test_variance)
 
     def _predict_missing(
         self, state: _State, num_observed: int, test_mean: torch.Tensor, test_variance: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the predictive mean ``(N*, Du)`` and the diagonal covariances ``(Du, N*, N*)``.
 
-        Each unobserved dimension uses its own kernel. The diagonal holds the variance of each test point.
+        Each unobserved dimension uses its own kernel and the training statistics (Damianou et al. 2016, appendix
+        D.2). The diagonal holds the variance of each test point.
         """
         unobserved = slice(num_observed, None)
-        kernel = state.kernel
-        kernel_u = ARDRBFKernel(
-            kernel.ard_weights[unobserved], kernel.signal_variance[unobserved], kernel.noise_precision[unobserved]
-        )
+        kernel_u = _kernel_subset(state.kernel, unobserved)
         l_uu, l_a = state.l_uu[unobserved], state.l_a[unobserved]
         y_unobserved_du_n1 = self.y_train[:, unobserved].T.unsqueeze(-1)
         psi_1 = kernel_u.psi_1(self.x_u, test_mean, test_variance)

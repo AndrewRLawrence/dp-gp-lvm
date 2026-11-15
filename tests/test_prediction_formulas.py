@@ -36,23 +36,51 @@ def numpy_latents(model) -> tuple[np.ndarray, np.ndarray]:
     return model.latent_mean.detach().numpy(), model.latent_variance.detach().numpy()
 
 
-def test_dp_gp_lvm_test_bound_has_one_term_for_each_dimension(
-    data: tuple[np.ndarray, np.ndarray], test_latents: tuple[torch.Tensor, torch.Tensor], rng: np.random.Generator
-) -> None:
-    """Item 7: [P] eq. (18) has one trace term for each dimension, in the test bound too."""
-    y_train, y_test = data
-    model = DPGPLVM(y_train, Q, M, T, seed=0)
+def make_model(name: str, y_train: np.ndarray, rng: np.random.Generator) -> BayesianGPLVM | MRD | DPGPLVM:
+    """Return a model with parameters away from their initial values. MRD has two views, split at ``D_OBS``."""
+    models = {
+        "bgplvm": lambda: BayesianGPLVM(y_train, Q, M, seed=0),
+        "mrd": lambda: MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0),
+        "dp_gp_lvm": lambda: DPGPLVM(y_train, Q, M, T, seed=0),
+    }
+    model = models[name]()
     randomise(model, rng)
+    return model
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("name", ["bgplvm", "mrd", "dp_gp_lvm"])
+def test_lower_bound_is_the_bound_of_the_augmented_data(
+    data: tuple[np.ndarray, np.ndarray],
+    test_latents: tuple[torch.Tensor, torch.Tensor],
+    rng: np.random.Generator,
+    name: str,
+    missing: bool,
+) -> None:
+    """Items 5 and 7: [J] section 4.1 and eq. (52) use one collapsed bound on the augmented data (Y, Y*).
+
+    The unobserved dimensions keep their training terms. DP-GP-LVM has one term for each dimension ([P] eq. 18).
+    """
+    y_train, y_test = data
+    model = make_model(name, y_train, rng)
     mean, variance = test_latents
-    x_mean, x_var = numpy_latents(model)
-    columns = kernel_columns(model)
-    expected = oracles.training_bound(y_train, x_mean, x_var, columns) - oracles.kl_standard_normal(
-        mean.numpy(), variance.numpy()
-    )
-    for d, (x_u, gamma, alpha, beta) in enumerate(columns):
-        expected += oracles.free_energy(y_test[:, d : d + 1], mean.numpy(), variance.numpy(), x_u, gamma, alpha, beta)
+    y_observed = y_test[:, :D_OBS] if missing else y_test
     with torch.no_grad():
-        bound = model.new_data_bound(y_test, mean, variance)
+        if isinstance(model, MRD):
+            views = [y_test[:, :D_OBS]] if missing else [y_test[:, :D_OBS], y_test[:, D_OBS:]]
+            bound = (
+                model.missing_data_bound(views, mean, variance)
+                if missing
+                else model.new_data_bound(views, mean, variance)
+            )
+        elif missing:
+            bound = model.missing_data_bound(y_observed, mean, variance)
+        else:
+            bound = model.new_data_bound(y_observed, mean, variance)
+    x_mean, x_var = numpy_latents(model)
+    expected = oracles.augmented_bound(
+        y_train, x_mean, x_var, y_observed, mean.numpy(), variance.numpy(), kernel_columns(model)
+    )
     np.testing.assert_allclose(bound.lower_bound.item(), expected, rtol=1e-9)
 
 
@@ -143,13 +171,7 @@ def test_predictive_variance_of_each_test_point(
 ) -> None:
     """Item 2: the formula of [C] section 4 and [J] eq. (41) is for one test point. Apply it to each test point."""
     y_train, y_test = data
-    models = {
-        "bgplvm": lambda: BayesianGPLVM(y_train, Q, M, seed=0),
-        "mrd": lambda: MRD([y_train[:, :D_OBS], y_train[:, D_OBS:]], Q, M, seed=0),
-        "dp_gp_lvm": lambda: DPGPLVM(y_train, Q, M, T, seed=0),
-    }
-    model = models[name]()
-    randomise(model, rng)
+    model = make_model(name, y_train, rng)
     mean, variance = test_latents
     predicted_mean, covariance = _predict(model, y_test, mean, variance)
     assert covariance.shape == (D - D_OBS, N_TEST, N_TEST)

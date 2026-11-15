@@ -47,6 +47,11 @@ golden values.
 - Item 3: all models return the approximate test log-likelihood `F(q(X, X*)) − F(q(X))` of the BGP-LVM papers.
   Before, the Bayesian GP-LVM returned `F̂* − F̂`, and MRD returned none. `NewDataBound.test_log_likelihood` is now
   always a tensor. The value of DP-GP-LVM does not change. No experiment uses the value of the Bayesian GP-LVM or MRD.
+- Item 5: the test bound is one collapsed bound on the training data augmented with the test data, as in the BGP-LVM,
+  MRD, and DP-GP-LVM papers. The statistics are `ψ0 + ψ0*`, `[Ψ1; Ψ1*]`, and `Ψ2 + Ψ2*`. For missing data, the
+  observed dimensions use this bound, and the unobserved dimensions keep their training terms (eq. (52) of the journal
+  paper). Before, the test data had a separate collapsed bound. The fix changes q(X*) in all models, so all
+  missing-data results and all test log-likelihoods change. The predictive formulas still use the training statistics.
 - Item 6: MRD predicts each unobserved view with the training term of that view. Before, every unobserved view used
   the term of the last view. The fix has no effect when only the last view is unobserved, as in all the experiments.
 - Item 7: the DP-GP-LVM test bound has one trace term for each dimension, as in eq. (18) of the DP-GP-LVM
@@ -96,5 +101,3 @@ proposes a fix. The item numbers are the numbers in that document. "Fixed" under
 
 - **Item 4.** With `mask_size > 1`, the DP terms count every row of Φ. Only `D / mask_size` rows are free.
   Confidence: medium-high.
-- **Item 5.** The test bound is a separate collapsed bound on the test data. All four papers use one collapsed bound on
-  the training data augmented with the test data. Confidence that this departs from the papers: high.

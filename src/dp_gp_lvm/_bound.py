@@ -46,6 +46,33 @@ def cholesky_a(beta_b11: torch.Tensor, whitened_psi_2: torch.Tensor) -> torch.Te
     return torch.linalg.cholesky(beta_b11 * whitened_psi_2 + batch_eye(size, batch, whitened_psi_2))
 
 
+def collapsed_factors(
+    beta_b11: torch.Tensor, l_uu: torch.Tensor, psi_1: torch.Tensor, psi_2: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return the factors of the collapsed lower bound: ``L⁻¹ Ψ2 L⁻ᵀ``, the Cholesky factor of ``A``, and ``C``.
+
+    Parameters
+    ----------
+    beta_b11 : torch.Tensor
+        The noise precisions, with the shape ``(B, 1, 1)``.
+    l_uu : torch.Tensor
+        The Cholesky factors ``L`` of ``K_uu``, with the shape ``(B, M, M)``.
+    psi_1 : torch.Tensor
+        The Psi-1 statistics, with the shape ``(B, N, M)``.
+    psi_2 : torch.Tensor
+        The Psi-2 statistics, with the shape ``(B, M, M)``.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        The whitened Psi-2 statistics ``(B, M, M)``, the Cholesky factors ``L_A`` of ``A`` ``(B, M, M)``, and
+        ``C = L_A⁻¹ L⁻¹ Ψ1ᵀ`` ``(B, M, N)``.
+    """
+    whitened = whiten(l_uu, psi_2)
+    l_a = cholesky_a(beta_b11, whitened)
+    return whitened, l_a, solve_lower(l_a, solve_lower(l_uu, transpose(psi_1)))
+
+
 def inverse_lower(lower: torch.Tensor) -> torch.Tensor:
     """Return the inverse of each lower triangular matrix in a batch.
 
