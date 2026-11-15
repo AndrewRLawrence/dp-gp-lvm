@@ -6,6 +6,8 @@ The sources are Titsias and Lawrence (2010) [C], Damianou et al. (2016) [J], and
 
 from __future__ import annotations
 
+from typing import Any
+
 import legacy_reference
 import numpy as np
 import oracles
@@ -237,3 +239,22 @@ def test_test_log_likelihood_is_the_difference_of_the_lower_bounds(
     x_mean, x_var = numpy_latents(model)
     training_bound = oracles.training_bound(y_train, x_mean, x_var, kernel_columns(model))
     np.testing.assert_allclose(bound.test_log_likelihood.item(), bound.lower_bound.item() - training_bound, rtol=1e-9)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("name", ["bgplvm", "mrd", "dp_gp_lvm"])
+def test_test_bound_gradients_match_finite_differences(
+    data: tuple[np.ndarray, np.ndarray], rng: np.random.Generator, name: str, missing: bool
+) -> None:
+    """The q(X*) fit uses the gradients of the augmented bound with respect to the means and the variances."""
+    y_train, y_test = data
+    model = make_model(name, y_train[:8], rng)
+    y: Any = y_test[:2, :D_OBS] if missing else y_test[:2]
+    if isinstance(model, MRD):
+        y = [y_test[:2, :D_OBS]] if missing else [y_test[:2, :D_OBS], y_test[:2, D_OBS:]]
+    bound: Any = model.missing_data_bound if missing else model.new_data_bound
+    mean = torch.as_tensor(rng.standard_normal((2, Q)), dtype=torch.float64).requires_grad_(True)
+    raw = torch.as_tensor(rng.standard_normal((2, Q)), dtype=torch.float64).requires_grad_(True)
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    assert torch.autograd.gradcheck(lambda m, r: bound(y, m, torch.nn.functional.softplus(r)).lower_bound, (mean, raw))
