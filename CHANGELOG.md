@@ -21,6 +21,7 @@ keeps the legacy version.
 - Golden values from the legacy code, and parity tests against them.
 - Unit tests, identity tests from the paper, gradient checks, and smoke tests. Branch coverage is 100%.
 - CI on GitHub Actions for Python 3.12 to 3.15, coverage on Codecov, and Dependabot updates.
+- The `cpu` (default) and `cuda` dependency groups, which select the torch build for development.
 - `CITATION.cff`, `CONTRIBUTING.md`, and `data/README.md`.
 
 ### Changed

@@ -61,6 +61,10 @@ experiments = [
     "matplotlib>=3.10.7,<4",
     "scipy>=1.15,<2",
 ]
+# The torch build for development in this repository. "cpu" is the default. To use CUDA on Linux or Windows, run
+# `uv sync --no-group cpu --group cuda`. These groups do not change the published package, which needs plain torch.
+cpu = ["torch>=2.6,<3"]
+cuda = ["torch>=2.6,<3"]
 dev = [
     { include-group = "test" },
     { include-group = "lint" },
@@ -73,16 +77,26 @@ requires = ["uv_build>=0.13.8,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
 
-# Use CPU-only torch wheels on Linux. This keeps CUDA (several GB) out of development and CI environments.
-# This setting applies to uv only. It does not change the published package metadata.
+# The "cpu" group uses CPU-only torch wheels on Linux. This keeps CUDA (several GB) out of development and CI.
+# The "cuda" group uses CUDA 13.2 wheels, which exist for Linux and Windows only. macOS always uses the PyPI wheels.
+# These settings apply to uv only. They do not change the published package metadata.
 [tool.uv.sources]
-torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torch = [
+    { index = "pytorch-cpu", group = "cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu132", group = "cuda", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.ruff]
