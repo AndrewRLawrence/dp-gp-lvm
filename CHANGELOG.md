@@ -6,6 +6,14 @@ This file records the notable changes of each version. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `fit_restarts` and `Restarts`: train one model for each seed and keep the model with the lowest final objective.
+  The objective is not convex, so restarts make a bad local optimum less likely.
+- The experiment options `--restarts N` and `--model-seed`. The defaults train one model with the legacy seed, as
+  before.
+- The keys `restart_seeds`, `restart_objectives`, and `best_seed` in the `.npz` and `.json` result files.
+
 ### Changed
 
 - `ARDRBFKernel.psi_2` and `ARDRBFKernel.psi_1` use less memory. A batched matrix product calculates the sum over
@@ -18,6 +26,9 @@ This file records the notable changes of each version. The format follows
   - `experiments.skin_cancer` with six conditions: 20.3 GB before, 0.91 GB after.
   - `experiments.skin_cancer` with seven conditions: 22.0 GB before, 0.96 GB after.
 - One objective evaluation and its gradient are also approximately 5 times faster at these sizes on the CPU.
+- `train_opt_time` in the experiment result files is the total training time of all restarts. With one restart, the
+  value has the same meaning as before.
+- The experiments print the seed of each training run, and the final objective of each restart.
 
 ## [1.0.0] - Unreleased
 

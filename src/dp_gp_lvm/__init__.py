@@ -17,6 +17,7 @@ from dp_gp_lvm.prediction import (
     NewDataBound,
     ViewsMissingDataBound,
 )
+from dp_gp_lvm.restarts import Restarts, fit_restarts
 from dp_gp_lvm.training import fit
 
 __version__ = version("dp-gp-lvm")
@@ -31,7 +32,9 @@ __all__ = [
     "MissingDataBound",
     "MissingDataPrediction",
     "NewDataBound",
+    "Restarts",
     "ViewsMissingDataBound",
     "__version__",
     "fit",
+    "fit_restarts",
 ]

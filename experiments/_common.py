@@ -12,12 +12,15 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM, fit
+from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM, Restarts, fit_restarts
 from dp_gp_lvm.distributions import mvn_log_pdf
 from dp_gp_lvm.optim import OptimiserName
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
+
+#: The seed of the initial model values in most legacy experiments.
+LEGACY_SEED = 1
 
 type Model = BayesianGPLVM | MRD | DPGPLVM
 
@@ -48,6 +51,25 @@ class Settings:
     output: Path
     force: bool
     log_every: int
+    restarts: int = 1
+    model_seed: int | None = None
+
+    def model_seeds(self, default: int) -> list[int]:
+        """Return the seed of each restart: ``restarts`` consecutive seeds from the first seed.
+
+        The first seed is ``model_seed``. If ``model_seed`` is not set, the first seed is ``default``, the legacy seed.
+        """
+        first = default if self.model_seed is None else self.model_seed
+        return list(range(first, first + self.restarts))
+
+
+def positive_int(text: str) -> int:
+    """Return the integer value of a command-line argument. Raise an error if the value is not positive."""
+    value = int(text)
+    if value <= 0:
+        msg = f"The value must be a positive integer. The value is {text!r}."
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def parser(description: str, defaults: Defaults, name: str) -> argparse.ArgumentParser:
@@ -73,6 +95,18 @@ def parser(description: str, defaults: Defaults, name: str) -> argparse.Argument
     p.add_argument("--output", type=Path, default=RESULTS_DIR / name, help="Directory for the results.")
     p.add_argument("--force", action="store_true", help="Run again, even if a result file exists.")
     p.add_argument("--log-every", type=int, default=100, help="Print the objective every this many steps.")
+    p.add_argument(
+        "--restarts",
+        type=positive_int,
+        default=1,
+        help="Train this many models with consecutive seeds. Keep the model with the lowest final objective.",
+    )
+    p.add_argument(
+        "--model-seed",
+        type=int,
+        default=None,
+        help="The seed of the initial model values of the first restart. If not set, the legacy seed.",
+    )
     return p
 
 
@@ -89,6 +123,8 @@ def settings(args: argparse.Namespace) -> Settings:
         output=args.output,
         force=args.force,
         log_every=args.log_every,
+        restarts=args.restarts,
+        model_seed=args.model_seed,
     )
 
 
@@ -163,20 +199,79 @@ def gaussian_log_likelihood(ground_truth: np.ndarray, mean: torch.Tensor, covari
     return float(torch.stack(terms).sum())
 
 
-def train(model: Model, run: Settings, label: str) -> tuple[list[float], float]:
-    """Train a model and print the objective. Return the history and the time in seconds."""
-    print(f"Training {label} for {run.iterations} steps.")
+@dataclass(frozen=True)
+class Trained[M: Model]:
+    """The best model of the restarts of one training run, and the record of each restart."""
 
-    def log(step: int, value: float) -> None:
+    restarts: Restarts[M]
+    seconds: float
+
+    @property
+    def model(self) -> M:
+        """The model with the lowest final objective."""
+        return self.restarts.model
+
+    def arrays(self) -> dict[str, np.ndarray]:
+        """Return the learned parameters, the training history, and the record of each restart, for the npz file."""
+        return model_arrays(self.model) | {
+            "train_history": np.asarray(self.restarts.history),
+            "train_opt_time": np.asarray(self.seconds),
+            "best_seed": np.asarray(self.restarts.seed),
+            "restart_seeds": np.asarray(self.restarts.seeds),
+            "restart_objectives": np.asarray(self.restarts.objectives),
+        }
+
+    def config(self) -> dict[str, object]:
+        """Return the record of each restart, for the json file."""
+        return {
+            "best_seed": self.restarts.seed,
+            "restart_seeds": list(self.restarts.seeds),
+            "restart_objectives": list(self.restarts.objectives),
+        }
+
+
+def train[M: Model](
+    build: Callable[[int], M], run: Settings, label: str, default_seed: int = LEGACY_SEED
+) -> Trained[M]:
+    """Train one model for each restart seed and keep the model with the lowest final objective.
+
+    Parameters
+    ----------
+    build : callable
+        A function that takes a seed and returns a new model.
+    run : Settings
+        The run settings. ``run.restarts`` and ``run.model_seed`` give the seeds.
+    label : str
+        The name of the model in the printed output.
+    default_seed : int, default LEGACY_SEED
+        The first seed if ``run.model_seed`` is not set.
+
+    Returns
+    -------
+    Trained
+        The best model and the record of each restart. The time is the total time of all restarts, in seconds.
+    """
+    seeds = run.model_seeds(default_seed)
+    if len(seeds) == 1:
+        print(f"Training {label} for {run.iterations} steps with seed {seeds[0]}.")
+    else:
+        names = ", ".join(str(seed) for seed in seeds)
+        print(f"Training {label} for {run.iterations} steps with {len(seeds)} restarts: seeds {names}.")
+
+    def log(seed: int, step: int, value: float) -> None:
         if run.log_every > 0 and step % run.log_every == 0:
-            print(f"  {label} step {step:5d}: {value:.4f}")
+            print(f"  {label} seed {seed} step {step:5d}: {value:.4f}")
 
     start = time.perf_counter()
-    history = fit(model, run.iterations, run.learning_rate, optimiser=run.optimiser, callback=log)
+    restarts = fit_restarts(build, seeds, run.iterations, run.learning_rate, optimiser=run.optimiser, callback=log)
     seconds = time.perf_counter() - start
-    if history:
-        print(f"  {label} final objective: {model.objective().detach().item():.4f} ({seconds:.1f} s)")
-    return history, seconds
+    if len(seeds) == 1:
+        print(f"  {label} final objective: {restarts.objective:.4f} ({seconds:.1f} s)")
+    else:
+        for seed, objective in zip(restarts.seeds, restarts.objectives, strict=True):
+            print(f"  {label} seed {seed} final objective: {objective:.4f}")
+        print(f"  {label} keeps seed {restarts.seed}, the restart with the lowest final objective ({seconds:.1f} s).")
+    return Trained(restarts, seconds)
 
 
 def model_arrays(model: Model) -> dict[str, np.ndarray]:
@@ -270,18 +365,26 @@ def save_figure(path: Path, draw: Callable[[], object]) -> Path:
 
 
 def train_and_predict(
-    model: Model, label: str, run: Settings, y_observed: np.ndarray, y_unobserved: np.ndarray
-) -> dict[str, np.ndarray | float]:
-    """Train a model, fit q(X*) to the observed test columns, and score the unobserved columns.
+    build: Callable[[int], Model],
+    label: str,
+    run: Settings,
+    y_observed: np.ndarray,
+    y_unobserved: np.ndarray,
+    default_seed: int = LEGACY_SEED,
+) -> tuple[Trained[Model], dict[str, np.ndarray | float]]:
+    """Train a model with restarts, fit q(X*) to the observed test columns, and score the unobserved columns.
 
-    For MRD, the observed columns are the first view and the unobserved columns are the second view.
+    Only the best model of the restarts fits q(X*). For MRD, the observed columns are the first view and the
+    unobserved columns are the second view.
 
     Returns
     -------
-    dict
-        The learned parameters, the predictive distribution, and the ground-truth log-likelihood.
+    tuple
+        The best model with the record of each restart, and the prediction arrays: the predictive distribution and
+        the ground-truth log-likelihood.
     """
-    history, seconds = train(model, run, label)
+    trained = train(build, run, label, default_seed)
+    model = trained.model
     print(f"Fitting q(X*) for {label} for {run.predict_iterations} steps.")
     if isinstance(model, MRD):
         views_result = model.predict_missing_data(
@@ -297,9 +400,7 @@ def train_and_predict(
         mean, covariance = result.bound.mean, result.bound.covariance
     log_likelihood = gaussian_log_likelihood(y_unobserved, mean, covariance)
     print(f"  {label} ground-truth log-likelihood: {log_likelihood:.4f}")
-    return model_arrays(model) | {
-        "train_history": np.asarray(history),
-        "train_opt_time": seconds,
+    return trained, {
         "x_test_mean": latent_mean.cpu().numpy(),
         "x_test_covar": latent_variance.cpu().numpy(),
         "predicted_mean": mean.cpu().numpy(),

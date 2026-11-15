@@ -18,7 +18,6 @@ from experiments._common import (
     Defaults,
     Model,
     ResultStore,
-    model_arrays,
     parser,
     save_figure,
     settings,
@@ -31,16 +30,18 @@ DEFAULTS = Defaults(iterations=5000, learning_rate=0.01, latent_dims=20, inducin
 DIMS_PER_WALK = 93
 
 
-def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[], Model]]:
-    """Return the legacy model variants of this experiment."""
+def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+    """Return the legacy model variants of this experiment. Each builder takes the seed of the initial values."""
     num_dims = y.shape[1]
+    walks = [y[:, i : i + DIMS_PER_WALK] for i in range(0, num_dims, DIMS_PER_WALK)]
+    joints = [y[:, i : i + 3] for i in range(0, num_dims, 3)]
     return {
         # mask_size=3 keeps the three coordinates of each joint in one group.
-        "dp_gp_lvm": lambda: DPGPLVM(y, q, m, t, mask_size=3, seed=1),
-        "dp_gp_lvm_mask_93": lambda: DPGPLVM(y, q, m, t, mask_size=DIMS_PER_WALK, seed=1),
-        "bgplvm": lambda: BayesianGPLVM(y, q, m, seed=1),
-        "mrd": lambda: MRD([y[:, i : i + DIMS_PER_WALK] for i in range(0, num_dims, DIMS_PER_WALK)], q, m, seed=1),
-        "mrd_fully_independent": lambda: MRD([y[:, i : i + 3] for i in range(0, num_dims, 3)], q, m, seed=1),
+        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, mask_size=3, seed=seed),
+        "dp_gp_lvm_mask_93": lambda seed: DPGPLVM(y, q, m, t, mask_size=DIMS_PER_WALK, seed=seed),
+        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
+        "mrd": lambda seed: MRD(walks, q, m, seed=seed),
+        "mrd_fully_independent": lambda seed: MRD(joints, q, m, seed=seed),
     }
 
 
@@ -65,16 +66,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = f"{label}_cmu_walking_normal_swapped"
         if store.skip(result):
             continue
-        model = available[label]()
-        history, seconds = train(model, run, label)
-        arrays = model_arrays(model)
+        trained = train(available[label], run, label)
+        arrays = trained.arrays()
         store.save(
             result,
-            {"model": label, **vars(run), "frame_step": args.frame_step},
+            {"model": label, **vars(run), "frame_step": args.frame_step, **trained.config()},
             original_data=original,
             y_train=y,
-            train_history=np.asarray(history),
-            train_opt_time=seconds,
             **arrays,
         )
         weights = arrays["ard_weights"].reshape(-1, run.latent_dims)

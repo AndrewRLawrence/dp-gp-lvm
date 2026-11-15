@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -17,8 +18,9 @@ pytestmark = pytest.mark.experiments
 TINY = ["--iterations", "2", "--predict-iterations", "2", "--latent-dims", "2", "--inducing-points", "3"]
 TINY += ["--truncation-level", "2", "--log-every", "1"]
 
-CASES: dict[str, tuple[Callable[[Sequence[str] | None], int], list[str], int]] = {
-    "synthetic": (synthetic.main, ["--variant", "two-func", "--num-samples", "20"], 2),
+# Each case gives the main function, the arguments, the number of result files, and the legacy first model seed.
+CASES: dict[str, tuple[Callable[[Sequence[str] | None], int], list[str], int, int]] = {
+    "synthetic": (synthetic.main, ["--variant", "two-func", "--num-samples", "20"], 2, 1),
     "synthetic-missing": (
         synthetic.main,
         [
@@ -26,29 +28,64 @@ CASES: dict[str, tuple[Callable[[Sequence[str] | None], int], list[str], int]] =
             *("--percent-samples", "0.8", "--percent-dims", "0.8"),
         ],
         2,
+        10,  # The legacy missing-data runs use the split seed for the initial model values.
     ),
-    "synthetic-four-func": (synthetic.main, ["--variant", "four-func", "--num-samples", "20"], 2),
-    "cmu-swapped-legs": (cmu_swapped_legs.main, ["--frame-step", "20"], 5),
-    "oivae-comparison": (oivae_cmu.main, ["--mode", "comparison", "--num-frames", "20"], 1),
-    "oivae-test": (oivae_cmu.main, ["--mode", "test-loglikelihood", "--sequences", "1", "--frame-step", "20"], 1),
-    "frey-prediction": (frey_faces.main, ["--variant", "prediction", "--seeds", "0", "--num-train", "15"], 2),
-    "frey-split": (frey_faces.main, ["--variant", "split", "--seeds", "0", "--num-train", "15"], 2),
-    "frey-bgplvm": (frey_faces.main, ["--variant", "bgplvm", "--num-train", "15", "--num-test", "3"], 1),
-    "colposcopy": (colposcopy.main, [], 1),
-    "skin-cancer": (skin_cancer.main, ["--labels", "0", "1", "--num-samples", "20"], 3),
+    "synthetic-four-func": (synthetic.main, ["--variant", "four-func", "--num-samples", "20"], 2, 1),
+    "cmu-swapped-legs": (cmu_swapped_legs.main, ["--frame-step", "20"], 5, 1),
+    "oivae-comparison": (oivae_cmu.main, ["--mode", "comparison", "--num-frames", "20"], 1, 1),
+    "oivae-test": (oivae_cmu.main, ["--mode", "test-loglikelihood", "--sequences", "1", "--frame-step", "20"], 1, 1),
+    "frey-prediction": (frey_faces.main, ["--variant", "prediction", "--seeds", "0", "--num-train", "15"], 2, 10),
+    "frey-split": (frey_faces.main, ["--variant", "split", "--seeds", "0", "--num-train", "15"], 2, 10),
+    "frey-bgplvm": (frey_faces.main, ["--variant", "bgplvm", "--num-train", "15", "--num-test", "3"], 1, 10),
+    "colposcopy": (colposcopy.main, [], 1, 1),
+    "skin-cancer": (skin_cancer.main, ["--labels", "0", "1", "--num-samples", "20"], 3, 1),
 }
 
 
+def check_restarts(path: Path, seeds: list[int]) -> None:
+    """Check that a result keeps the restart with the lowest final objective, and records every restart."""
+    with np.load(path) as saved:
+        objectives = saved["restart_objectives"]
+        best_seed = int(saved["best_seed"])
+        assert saved["restart_seeds"].tolist() == seeds
+        np.testing.assert_allclose(saved["final_cost"], objectives.min(), rtol=1e-12)
+    assert objectives.shape == (len(seeds),)
+    assert best_seed == seeds[int(objectives.argmin())]
+    config = json.loads(path.with_suffix(".json").read_text())
+    assert config["restarts"] == len(seeds)
+    assert config["restart_seeds"] == seeds
+    assert config["best_seed"] == best_seed
+    np.testing.assert_allclose(config["restart_objectives"], objectives, rtol=1e-12)
+
+
+@pytest.mark.parametrize("restarts", [1, 2])
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_experiment_runs(case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    main, arguments, num_results = CASES[case]
-    assert main([*TINY, *arguments, "--output", str(tmp_path)]) == 0
-    assert len(list(tmp_path.glob("*.npz"))) == num_results
+def test_experiment_runs(case: str, restarts: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main, arguments, num_results, legacy_seed = CASES[case]
+    command = [*TINY, *arguments, "--restarts", str(restarts), "--output", str(tmp_path)]
+    assert main(command) == 0
+    results = sorted(tmp_path.glob("*.npz"))
+    assert len(results) == num_results
     assert len(list(tmp_path.glob("*.json"))) == num_results
+    for path in results:
+        check_restarts(path, list(range(legacy_seed, legacy_seed + restarts)))
+    assert ("keeps seed" in capsys.readouterr().out) == (restarts > 1)
     # A second run finds the results and skips the training.
-    capsys.readouterr()
-    assert main([*TINY, *arguments, "--output", str(tmp_path)]) == 0
+    assert main(command) == 0
     assert "Skip" in capsys.readouterr().out
+
+
+def test_model_seed_sets_the_first_restart_seed(tmp_path: Path) -> None:
+    assert colposcopy.main([*TINY, "--restarts", "3", "--model-seed", "5", "--output", str(tmp_path)]) == 0
+    (path,) = tmp_path.glob("*.npz")
+    check_restarts(path, [5, 6, 7])
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "two"])
+def test_restarts_must_be_a_positive_integer(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        colposcopy.main(["--restarts", value])
+    assert "--restarts" in capsys.readouterr().err
 
 
 def test_standardise_matches_the_legacy_scaler(rng: np.random.Generator) -> None:

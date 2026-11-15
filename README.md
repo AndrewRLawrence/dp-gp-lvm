@@ -73,8 +73,24 @@ mean = prediction.bound.mean  # Shape (N*, D - Do).
 covariance = prediction.bound.covariance  # Shape (D - Do, N*, N*).
 ```
 
-The objective is not convex. Different seeds can give different local optima. Train with several seeds and keep the
-model with the lowest objective.
+The objective is not convex. Different seeds can give different local optima. For example, some seeds of the paper
+Fig. 3 experiment mix the two true groups of observed dimensions. To make this problem less likely, train one model for
+each of several seeds and keep the model with the lowest final objective. `fit_restarts` does this:
+
+```python
+from dp_gp_lvm import fit_restarts
+
+restarts = fit_restarts(
+    lambda seed: DPGPLVM(y, num_latent_dims=10, num_inducing_points=25, truncation_level=8, seed=seed),
+    seeds=range(5),
+    iterations=1500,
+    learning_rate=0.05,
+)
+model = restarts.model  # The model with the lowest final objective.
+print(restarts.seed, restarts.objectives)  # The seed of that model, and the final objective of each restart.
+```
+
+`fit_restarts` keeps only the best model so far. Thus, not more than two models use memory at the same time.
 
 ## Models
 
@@ -86,6 +102,7 @@ model with the lowest objective.
 | `DirichletProcess` | A truncated stick-breaking DP with a variational posterior. | Blei and Jordan (2005) |
 | `ARDRBFKernel` | An RBF kernel with ARD weights and its psi statistics. | Supplemental section C |
 | `fit` | The training loop. It uses the Adam optimiser. | - |
+| `fit_restarts` | Trains one model for each seed and keeps the model with the lowest final objective. | - |
 
 Each model has these prediction methods:
 
@@ -114,6 +131,27 @@ hyperparameters. Each command shows its options with `--help`.
 
 Each experiment writes its results to `results/<experiment>/`. Each result has an `.npz` file, a `.json` file with
 the settings, and PDF plots. If a result exists, the experiment does not run it again. To run it again, add `--force`.
+
+Each experiment trains one model with the legacy seed by default. To train more models with different seeds, add
+`--restarts N`. The experiment then trains `N` models with consecutive seeds and keeps the model with the lowest final
+objective. Only that model predicts the missing data. For example, this command trains five DP-GP-LVM models with the
+seeds 0 to 4:
+
+```bash
+uv run python -m experiments.synthetic --variant two-func --restarts 5 --model-seed 0
+```
+
+`--model-seed` sets the first seed. If you do not set it, the first seed is the legacy seed: 1 for most experiments,
+10 for Frey faces, and the split seed for the synthetic missing-data runs. Each result file records the restarts:
+
+| Key | Value |
+|---|---|
+| `restart_seeds` | The seed of each restart. |
+| `restart_objectives` | The final objective of each restart, in the order of `restart_seeds`. |
+| `best_seed` | The seed of the model with the lowest final objective. The file contains this model. |
+
+`train_opt_time` is the total training time of all restarts, in seconds. `train_history` is the objective history of
+the best model.
 
 The PoseTrack (paper Fig. 4 and Table 1) and horse (paper Fig. 5) experiments are not available. Their data is not
 in this repository. `data/README.md` gives the source and the licence of each data set.

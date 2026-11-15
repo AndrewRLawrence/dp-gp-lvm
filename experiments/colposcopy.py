@@ -14,7 +14,7 @@ import numpy as np
 
 from dp_gp_lvm import DPGPLVM
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
-from experiments._common import Defaults, ResultStore, model_arrays, parser, save_figure, settings, standardise, train
+from experiments._common import Defaults, ResultStore, parser, save_figure, settings, standardise, train
 from experiments._data import colposcopy
 
 DEFAULTS = Defaults(iterations=2500, learning_rate=0.05, latent_dims=15, inducing_points=50, truncation_level=20)
@@ -34,16 +34,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Colposcopy '{args.modality}': N={y.shape[0]}, D={y.shape[1]} (62 attributes and 7 assessments).")
     result = f"dp_gp_lvm_colposcopy_{args.modality}"
     if not store.skip(result):
-        model = DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=1)
-        history, seconds = train(model, run, "dp_gp_lvm")
-        store.save(
-            result,
-            {"modality": args.modality, **vars(run)},
-            y_train=y,
-            train_history=np.asarray(history),
-            train_opt_time=seconds,
-            **model_arrays(model),
+        trained = train(
+            lambda seed: DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=seed),
+            run,
+            "dp_gp_lvm",
         )
+        config = {"modality": args.modality, **vars(run), **trained.config()}
+        store.save(result, config, y_train=y, **trained.arrays())
     arrays = store.load(result)
     groups = arrays["assignments"].argmax(axis=-1)
     print(f"  DP groups of the 7 assessments: {groups[-7:].tolist()}")

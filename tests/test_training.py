@@ -9,7 +9,7 @@ import pytest
 import torch
 from synthetic import smooth_data, two_group_data
 
-from dp_gp_lvm import DPGPLVM, BayesianGPLVM, DirichletProcess, fit
+from dp_gp_lvm import DPGPLVM, BayesianGPLVM, DirichletProcess, fit, fit_restarts
 from dp_gp_lvm.optim import LegacyAdam, make_optimiser
 
 
@@ -90,21 +90,19 @@ def test_dp_gp_lvm_recovers_two_groups() -> None:
     """Paper Fig. 3: the DP assignments must separate two groups of dimensions.
 
     The objective is not convex. Some random starts stop in a local optimum with one group, as in the legacy code.
-    So the test uses the best of three restarts, by the objective.
+    So the test uses the best of three restarts, by the final objective.
     """
     dims_per_group = 8
     y = two_group_data(np.random.default_rng(0), num_samples=60, dims_per_group=dims_per_group)
-    best: tuple[float, list[int]] | None = None
-    for seed in range(3):
-        model = DPGPLVM(y, num_latent_dims=5, num_inducing_points=15, truncation_level=5, seed=seed)
-        history = fit(model, 1000, learning_rate=0.05)
-        assert history[-1] < history[0]
-        final = model.objective().detach().item()
-        if best is None or final < best[0]:
-            best = (final, model.assignments.argmax(dim=-1).tolist())
-    assert best is not None
-    groups = best[1]
+    restarts = fit_restarts(
+        lambda seed: DPGPLVM(y, num_latent_dims=5, num_inducing_points=15, truncation_level=5, seed=seed),
+        seeds=range(3),
+        iterations=1000,
+        learning_rate=0.05,
+    )
+    assert all(history[-1] < history[0] for history in restarts.histories)
+    groups = restarts.model.assignments.argmax(dim=-1).tolist()
     first, second = groups[:dims_per_group], groups[dims_per_group:]
-    assert len(set(first)) == 1, groups
-    assert len(set(second)) == 1, groups
-    assert first[0] != second[0], groups
+    assert len(set(first)) == 1, (groups, restarts.objectives)
+    assert len(set(second)) == 1, (groups, restarts.objectives)
+    assert first[0] != second[0], (groups, restarts.objectives)

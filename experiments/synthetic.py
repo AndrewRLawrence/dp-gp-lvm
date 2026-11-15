@@ -12,6 +12,7 @@ import argparse
 import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 import torch
@@ -23,7 +24,6 @@ from experiments._common import (
     ResultStore,
     Settings,
     block_permute,
-    model_arrays,
     parser,
     save_figure,
     settings,
@@ -100,26 +100,13 @@ def make_data(variant: Variant, num_samples: int = 100) -> tuple[np.ndarray, np.
 
 def run_structure(name: str, y: np.ndarray, truth: np.ndarray, run: Settings, store: ResultStore) -> None:
     """Train the Bayesian GP-LVM and DP-GP-LVM on all data, and plot the learned structure."""
-    models = {
-        "bgplvm": lambda: BayesianGPLVM(y, run.latent_dims, run.inducing_points, seed=1),
-        "dp_gp_lvm": lambda: DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=1),
-    }
-    for label, build in models.items():
+    for label in ("bgplvm", "dp_gp_lvm"):
         result = f"{label}_{name}"
         if store.skip(result):
             continue
-        model = build()
-        history, seconds = train(model, run, label)
-        arrays = model_arrays(model)
-        store.save(
-            result,
-            {"variant": name, **vars(run)},
-            y_train=y,
-            truth=truth,
-            train_history=np.asarray(history),
-            train_opt_time=seconds,
-            **arrays,
-        )
+        trained = train(partial(build_model, label, y, run), run, label)
+        arrays = trained.arrays()
+        store.save(result, {"variant": name, **vars(run), **trained.config()}, y_train=y, truth=truth, **arrays)
         save_figure(store.directory / f"{result}_ard.pdf", lambda w=arrays["ard_weights"]: plot_ard_weights(w))
         if "assignments" in arrays:
             groups = arrays["assignments"].argmax(axis=-1)
@@ -153,10 +140,11 @@ def run_missing(
         for label in ("bgplvm", "dp_gp_lvm"):
             result = f"{label}_{name}_missing_seed{seed}_n{n}_d{d}"
             if not store.skip(result):
-                arrays = train_and_predict(build_model(label, y_train, run, seed), label, run, observed, unobserved)
-                store.save(
-                    result, {"variant": name, "seed": seed, "n": n, "d": d, **vars(run)}, y_train=y_train, **arrays
-                )
+                # The legacy runs use the split seed for the initial model values too.
+                build = partial(build_model, label, y_train, run)
+                trained, prediction = train_and_predict(build, label, run, observed, unobserved, seed)
+                config = {"variant": name, "seed": seed, "n": n, "d": d, **vars(run), **trained.config()}
+                store.save(result, config, y_train=y_train, **trained.arrays(), **prediction)
             scores.setdefault((label, n, d), []).append(float(store.load(result)["gt_log_likelihood"]))
     print("\nGround-truth log-likelihood (mean ± standard error over seeds):")
     for (label, n, d), values in sorted(scores.items()):
