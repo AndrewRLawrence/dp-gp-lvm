@@ -8,7 +8,7 @@ Run ``uv run python -m experiments.skin_cancer --help`` for the options. Example
     uv run python -m experiments.skin_cancer --labels 0 1
     uv run python -m experiments.skin_cancer --conditions 3 --all
 
-The legacy settings need a lot of memory for six or seven conditions (D = 384 or 448).
+With six or seven conditions (D = 384 or 448), the legacy settings need approximately 1 GB of memory.
 """
 
 from __future__ import annotations

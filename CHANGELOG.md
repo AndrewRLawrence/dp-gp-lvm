@@ -16,6 +16,16 @@ This file records the notable changes of each version. The format follows
 
 ### Changed
 
+- `ARDRBFKernel.psi_2` and `ARDRBFKernel.psi_1` use less memory. A batched matrix product calculates the sum over
+  the latent dimensions. Psi-2 does not make the `(B, N, M, M, Q)` tensor of the legacy code, and Psi-1 does not
+  make the `(B, N, M, Q)` tensor. Memory use of Psi-2 is in proportion to `B x N x M²`. The values do not change.
+  Only the order of the operations is different, so the values agree to approximately 1e-13 (relative).
+  The parity tests pass at the same tolerances.
+- These are the peak memory values of one DP-GP-LVM objective evaluation and its gradient, at the legacy settings:
+  - `experiments.cmu_swapped_legs`: 12.4 GB before, 0.63 GB after.
+  - `experiments.skin_cancer` with six conditions: 20.3 GB before, 0.91 GB after.
+  - `experiments.skin_cancer` with seven conditions: 22.0 GB before, 0.96 GB after.
+- One objective evaluation and its gradient are also approximately 5 times faster at these sizes on the CPU.
 - `train_opt_time` in the experiment result files is the total training time of all restarts. With one restart, the
   value has the same meaning as before.
 - The experiments print the seed of each training run, and the final objective of each restart.
