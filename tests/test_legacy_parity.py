@@ -1,7 +1,13 @@
-"""Parity tests: the PyTorch code must give the same values as the legacy TensorFlow 1.15 code."""
+"""Parity tests: the PyTorch code must give the same values as the legacy TensorFlow 1.15 code.
+
+The bug fixes change some outputs: the test bounds, the predictive covariances, and the DP terms with a mask. For these
+outputs, the tests use the legacy formulas in ``legacy_reference.py``. The library outputs that the fixes do not change,
+for example the training objective and the predictive mean, must still give the legacy values.
+"""
 
 from __future__ import annotations
 
+import legacy_reference
 import numpy as np
 import pytest
 import torch
@@ -211,16 +217,20 @@ def _test_inputs(case: str, prefix: str) -> tuple[object, torch.Tensor, torch.Te
     return y_test, mean, variance
 
 
+def _bound_function(prefix: str):
+    return legacy_reference.new_data_bound if prefix == "predict_new" else legacy_reference.missing_data_bound
+
+
 def _check_bound(case: str, prefix: str, stage: str, model, y_test, mean, variance, rtol: float) -> None:
     arrays = load(case)
     key = f"{prefix}.{stage}."
     if prefix == "predict_new":
-        bound = model.new_data_bound(y_test, mean, variance)
+        bound = legacy_reference.new_data_bound(model, y_test, mean, variance)
         close(bound.lower_bound, arrays[key + "lower_bound"], rtol=rtol)
         if case != "mrd":
             close(bound.test_log_likelihood, arrays[key + "test_log_likelihood"], rtol=rtol)
         return
-    bound = model.missing_data_bound(y_test, mean, variance)
+    bound = legacy_reference.missing_data_bound(model, y_test, mean, variance)
     close(bound.lower_bound, arrays[key + "lower_bound"], rtol=rtol)
     if case == "mrd":
         close(bound.means[0], arrays[key + "predicted_mean_0"], rtol=rtol)
@@ -248,9 +258,9 @@ def test_prediction_gradients(case: str, prefix: str) -> None:
     latents = TestLatents(mean)
     with torch.no_grad():
         latents.variance_raw.copy_(t(arrays[f"{prefix}.var.x_test_covar_raw"]))
-    bound_fn = model.new_data_bound if prefix == "predict_new" else model.missing_data_bound
+    bound_fn = _bound_function(prefix)
     with frozen(model):
-        (-bound_fn(y_test, latents.mean, latents.variance).lower_bound).backward()
+        (-bound_fn(model, y_test, latents.mean, latents.variance).lower_bound).backward()
     close(latents.mean.grad, arrays[f"{prefix}.grad.x_test_mean"], rtol=1e-8, atol=1e-9)
     close(latents.variance_raw.grad, arrays[f"{prefix}.grad.x_test_covar_raw"], rtol=1e-8, atol=1e-9)
 
@@ -264,11 +274,11 @@ def test_prediction_trajectory(case: str, prefix: str) -> None:
     latents = TestLatents(mean)
     with torch.no_grad():
         latents.variance_raw.copy_(t(arrays[f"{prefix}.var.x_test_covar_raw"]))
-    bound_fn = model.new_data_bound if prefix == "predict_new" else model.missing_data_bound
+    bound_fn = _bound_function(prefix)
     expected = arrays[f"{prefix}.adam.lower_bounds"]
     with frozen(model):
         history = optimise_test_latents(
-            lambda m, v: bound_fn(y_test, m, v).lower_bound,
+            lambda m, v: bound_fn(model, y_test, m, v).lower_bound,
             latents,
             iterations=len(expected) - 1,
             learning_rate=meta()["learning_rate"],
@@ -277,6 +287,24 @@ def test_prediction_trajectory(case: str, prefix: str) -> None:
     close(np.array(history), expected[:-1], rtol=LEGACY_ADAM_RTOL)
     with torch.no_grad():
         _check_bound(case, prefix, "adam.final", model, y_test, latents.mean, latents.variance, 1e-8)
+
+
+@pytest.mark.parametrize("stage", ["init", "adam.final"])
+@pytest.mark.parametrize("case", PREDICTION_CASES)
+def test_library_predictive_mean_matches_the_legacy_code(case: str, stage: str) -> None:
+    """The fixes do not change the predictive mean at a given q(X*). In the MRD case, only the last view is missing."""
+    arrays = load(case)
+    model, _ = make_model(case)
+    y_test, _, _ = _test_inputs(case, "predict_missing")
+    mean = t(arrays[f"predict_missing.{stage}.x_test_mean"])
+    variance = torch.diagonal(t(arrays[f"predict_missing.{stage}.x_test_covar"]), dim1=-2, dim2=-1)
+    with torch.no_grad():
+        bound = model.missing_data_bound(y_test, mean, variance)
+    key = f"predict_missing.{stage}.predicted_mean"
+    if case == "mrd":
+        close(bound.means[0], arrays[key + "_0"], rtol=1e-8)
+    else:
+        close(bound.mean, arrays[key], rtol=1e-8)
 
 
 @pytest.mark.slow
