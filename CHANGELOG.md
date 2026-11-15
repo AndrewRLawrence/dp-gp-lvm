@@ -33,8 +33,8 @@ This file records the notable changes of each version. The format follows
 ### Fixed
 
 These fixes follow the review in [docs/legacy-quirks.md](docs/legacy-quirks.md). The item numbers are the numbers in
-that document. `tests/legacy_reference.py` keeps the legacy formulas, and the parity tests compare them with the legacy
-golden values.
+that document. The document also gives the measured effect of each fix on the experiments. `tests/legacy_reference.py`
+keeps the legacy formulas, and the parity tests compare them with the legacy golden values.
 
 - Item 1: the DP-GP-LVM predictive variance subtracts the trace term `tr[(K_uu⁻¹ − (K_uu + βΨ2)⁻¹) Ψ2*]`, as in the
   BGP-LVM papers and the BGP-LVM and MRD code. Before, DP-GP-LVM added it. The fix makes the DP-GP-LVM predictive
