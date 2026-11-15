@@ -125,3 +125,55 @@ def gp_log_marginal_likelihood(y, x, gamma, alpha, beta):
     sign, log_det = np.linalg.slogdet(k)
     assert sign > 0
     return -0.5 * (d * log_det + np.trace(y.T @ np.linalg.solve(k, y)) + n * d * np.log(2.0 * np.pi))
+
+
+def predictive_moments(y_unobserved, x_mean, x_var, x_u, gamma, alpha, beta, test_mean, test_var):
+    """The predictive mean and variance of each test point and unobserved dimension, for one kernel.
+
+    This is the formula of Titsias and Lawrence (2010), section 4, and Damianou et al. (2016), eqs. (40) and (41), for
+    one test point x*: E(f*) = Λᵀ ψ1* and Cov(f*) = Λᵀ (Ψ2* - ψ1* ψ1*ᵀ) Λ + (ψ0* - tr[(K_uu⁻¹ - (K_uu + β Ψ2)⁻¹) Ψ2*])
+    I, with Λ = β (K_uu + β Ψ2)⁻¹ Ψ1ᵀ Y_U. The training statistics use q(X). The predictive variance of y* adds β⁻¹.
+    Returns the means and the variances, each with the shape (N*, Du).
+    """
+    k_uu = rbf_covariance(x_u, gamma, alpha, beta, include_jitter=True)
+    sigma = np.linalg.inv(k_uu + beta * psi_2(x_mean, x_var, x_u, gamma, alpha))
+    lam = beta * sigma @ psi_1(x_mean, x_var, x_u, gamma, alpha).T @ y_unobserved
+    difference = np.linalg.inv(k_uu) - sigma
+    num_test, num_unobserved = test_mean.shape[0], y_unobserved.shape[1]
+    mean, variance = np.zeros((num_test, num_unobserved)), np.zeros((num_test, num_unobserved))
+    for n in range(num_test):
+        point_mean, point_var = test_mean[n : n + 1], test_var[n : n + 1]
+        p0 = psi_0(1, alpha)
+        p1 = psi_1(point_mean, point_var, x_u, gamma, alpha)[0]
+        p2 = psi_2(point_mean, point_var, x_u, gamma, alpha)
+        mean[n] = lam.T @ p1
+        covariance = lam.T @ (p2 - np.outer(p1, p1)) @ lam + (p0 - np.trace(difference @ p2)) * np.eye(num_unobserved)
+        variance[n] = np.diag(covariance) + 1.0 / beta
+    return mean, variance
+
+
+def training_bound(y_train, x_mean, x_var, kernels):
+    """The lower bound F(q(X)) of the training data. kernels has one (x_u, gamma, alpha, beta) for each column."""
+    total = -kl_standard_normal(x_mean, x_var)
+    for d, (x_u, gamma, alpha, beta) in enumerate(kernels):
+        total += free_energy(y_train[:, d : d + 1], x_mean, x_var, x_u, gamma, alpha, beta)
+    return total
+
+
+def augmented_bound(y_train, x_mean, x_var, y_test, test_mean, test_var, kernels):
+    """The lower bound F(q(X, X*)) of the training data augmented with the test data.
+
+    This is Damianou et al. (2016), eq. (52). The observed columns are the first columns of y_test. They use one bound
+    on the augmented data (Y, Y*). The other columns use the training term only. If y_test has all columns, this is
+    the bound of section 4.1 for fully observed test data. kernels has one (x_u, gamma, alpha, beta) for each column.
+    """
+    num_observed = y_test.shape[1]
+    y_aug = np.vstack([y_train[:, :num_observed], y_test])
+    mean_aug, var_aug = np.vstack([x_mean, test_mean]), np.vstack([x_var, test_var])
+    total = -kl_standard_normal(x_mean, x_var) - kl_standard_normal(test_mean, test_var)
+    for d, (x_u, gamma, alpha, beta) in enumerate(kernels):
+        if d < num_observed:
+            total += free_energy(y_aug[:, d : d + 1], mean_aug, var_aug, x_u, gamma, alpha, beta)
+        else:
+            total += free_energy(y_train[:, d : d + 1], x_mean, x_var, x_u, gamma, alpha, beta)
+    return total

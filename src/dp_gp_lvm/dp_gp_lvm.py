@@ -338,8 +338,7 @@ class DPGPLVM(LatentVariableModel):
         f_hat_test = (
             0.5 * num_test * (torch.log(beta).sum() - num_dims * _LOG_2PI)
             - log_det_l_a
-            # NOTE(legacy): (D,) - (D, 1) broadcasts to (D, D) here. See CHANGELOG.md, known issue 7.
-            + 0.5 * (beta * (batch_trace(whitened) - psi_0)).sum()
+            + 0.5 * (beta * (batch_trace(whitened).unsqueeze(-1) - psi_0)).sum()
             - 0.5 * (beta * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
             + 0.5 * ((y_beta_d1n @ c_t_c) @ transpose(y_beta_d1n)).sum()
         )
@@ -392,8 +391,7 @@ class DPGPLVM(LatentVariableModel):
         f_hat_test = (
             0.5 * num_test * (torch.log(beta_observed).sum() - num_observed * _LOG_2PI)
             - log_det_l_a
-            # NOTE(legacy): (Do,) - (Do, 1) broadcasts to (Do, Do) here. See CHANGELOG.md, known issue 7.
-            + 0.5 * (beta_observed * (batch_trace(whitened_observed) - psi_0[:num_observed])).sum()
+            + 0.5 * (beta_observed * (batch_trace(whitened_observed).unsqueeze(-1) - psi_0[:num_observed])).sum()
             - 0.5 * (beta_observed * torch.diagonal(y.T @ y).unsqueeze(-1)).sum()
             + 0.5 * ((y_beta_do1n @ c_t_c) @ transpose(y_beta_do1n)).sum()
         )

@@ -8,6 +8,7 @@ import numpy as np
 import oracles
 import pytest
 import torch
+from helpers import copy_, matching_dp_gp_lvm, randomise
 from synthetic import smooth_data
 
 from dp_gp_lvm import DPGPLVM, MRD, ARDRBFKernel, BayesianGPLVM
@@ -20,31 +21,6 @@ N, D, M, Q, T = 20, 6, 5, 3, 4
 @pytest.fixture
 def y(rng: np.random.Generator) -> np.ndarray:
     return smooth_data(rng, N, D)
-
-
-def copy_(target: torch.nn.Parameter, source: torch.Tensor) -> None:
-    with torch.no_grad():
-        target.copy_(source)
-
-
-def randomise(model: torch.nn.Module, rng: np.random.Generator, scale: float = 0.3) -> None:
-    """Move every parameter a little away from its initial value."""
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.add_(torch.as_tensor(scale * rng.standard_normal(parameter.shape), dtype=parameter.dtype))
-
-
-def matching_dp_gp_lvm(model: BayesianGPLVM, y: np.ndarray, *, expectation: str = "plug_in") -> DPGPLVM:
-    """Make a DP-GP-LVM with T = 1 and the same parameters as a Bayesian GP-LVM."""
-    dp_model = DPGPLVM(y, Q, M, truncation_level=1, expectation=expectation, seed=1)  # ty: ignore[invalid-argument-type]
-    copy_(dp_model.x_mean, model.x_mean)
-    copy_(dp_model.x_covar_raw, model.x_covar_raw)
-    copy_(dp_model.x_u, model.x_u)
-    gamma, alpha, beta = model.kernel_raw
-    copy_(dp_model.gamma_atoms_raw, gamma)
-    copy_(dp_model.sig_var_atoms_raw, alpha)
-    copy_(dp_model.beta_atoms_raw, beta)
-    return dp_model
 
 
 class TestBayesianGPLVM:
