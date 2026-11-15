@@ -127,6 +127,9 @@ select = [
     "W",    # pycodestyle warnings
 ]
 
+# Greek letters in docstrings name the symbols of the paper.
+allowed-confusables = ["α", "γ", "ν", "ρ"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
@@ -137,6 +140,7 @@ convention = "numpy"
 
 [tool.ty.environment]
 python-version = "3.12"
+extra-paths = ["tests"]
 
 [tool.ty.src]
 include = ["src/dp_gp_lvm", "tests", "experiments", "scripts/ci"]
@@ -144,6 +148,7 @@ include = ["src/dp_gp_lvm", "tests", "experiments", "scripts/ci"]
 [tool.pytest]
 minversion = "9.0"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
 filterwarnings = ["error"]
