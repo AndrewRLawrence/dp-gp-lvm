@@ -327,6 +327,63 @@ def dp_gp_lvm_properties(model):
     return props
 
 
+LONG_N, LONG_DIMS_PER_GROUP, LONG_Q, LONG_M, LONG_T = 60, 8, 5, 15, 5
+LONG_STEPS, LONG_RECORD_EVERY = 1000, 50
+
+
+def case_long_training(meta):
+    """Record a long DP-GP-LVM training run on two-group GP data.
+
+    This case checks that the port follows the legacy optimisation over many steps, not only at the start.
+    """
+    tf.reset_default_graph()
+    rng = np.random.RandomState(7)
+    x = rng.standard_normal((LONG_N, 5))
+    groups = []
+    for ard, beta in (([1.0, 1.0, 0.0, 0.0, 0.0], 100.0), ([1.0, 0.0, 1.0, 0.0, 0.0], 500.0)):
+        kernel = k_ard_rbf(
+            gamma=tf.constant([ard], dtype=TF_DTYPE),
+            alpha=tf.constant([[1.0]], dtype=TF_DTYPE),
+            beta=tf.constant([[beta]], dtype=TF_DTYPE),
+        )
+        with tf.Session() as session:
+            covariance = session.run(kernel.covariance_matrix(x, include_noise=True, include_jitter=True))[0]
+        groups.append(rng.multivariate_normal(np.zeros(LONG_N), covariance, size=LONG_DIMS_PER_GROUP).T)
+    y = np.hstack(groups)
+    y = (y - y.mean(axis=0)) / y.std(axis=0)
+
+    tf.reset_default_graph()
+    np.random.seed(8)
+    model = dp_gp_lvm(y_train=y, num_latent_dims=LONG_Q, num_inducing_points=LONG_M, truncation_level=LONG_T)
+    variables = named(tf.global_variables(), [(n, None) for n, _ in DP_GP_LVM_VARS], "long")
+    var_list = [v for _, v in variables]
+    opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(loss=model.objective, var_list=var_list)
+    arrays = {"in.y_train": y}
+    with tf.Session() as session:
+        session.run(tf.variables_initializer(var_list=var_list))
+        session.run(tf.global_variables_initializer())
+        for name, variable in variables:
+            arrays["var." + name] = session.run(variable)
+        objectives = []
+        for step in range(LONG_STEPS):
+            if step % LONG_RECORD_EVERY == 0:
+                objectives.append(session.run(model.objective))
+            session.run(opt)
+        objectives.append(session.run(model.objective))
+        arrays["train.adam.objectives_every_{}".format(LONG_RECORD_EVERY)] = np.array(objectives)
+        arrays["train.adam.final_assignments"] = session.run(model.assignments)
+    meta["long_training"] = {
+        "N": LONG_N,
+        "dims_per_group": LONG_DIMS_PER_GROUP,
+        "Q": LONG_Q,
+        "M": LONG_M,
+        "T": LONG_T,
+        "steps": LONG_STEPS,
+        "record_every": LONG_RECORD_EVERY,
+    }
+    save("dp_gp_lvm_long_training", arrays, meta)
+
+
 def main():
     """Run all cases and write the metadata file."""
     meta = {
@@ -444,6 +501,8 @@ def main():
         inputs,
         meta,
     )
+
+    case_long_training(meta)
 
     with open(os.path.join(OUT_DIR, "meta.json"), "w") as handle:
         json.dump(meta, handle, indent=2, sort_keys=True)

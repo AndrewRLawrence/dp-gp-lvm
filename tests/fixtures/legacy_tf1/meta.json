@@ -94,6 +94,22 @@
       "var.q_v_a_raw",
       "var.q_v_b_raw"
     ],
+    "dp_gp_lvm_long_training": [
+      "in.y_train",
+      "train.adam.final_assignments",
+      "train.adam.objectives_every_50",
+      "var.beta_atoms_raw",
+      "var.gamma_atoms_raw",
+      "var.phi_logits",
+      "var.q_alpha_w1_raw",
+      "var.q_alpha_w2_raw",
+      "var.q_v_a_raw",
+      "var.q_v_b_raw",
+      "var.sig_var_atoms_raw",
+      "var.x_covar_raw",
+      "var.x_mean",
+      "var.x_u"
+    ],
     "dp_gp_lvm_mask1": [
       "grad.beta_atoms_raw",
       "grad.gamma_atoms_raw",
@@ -423,6 +439,15 @@
   },
   "learning_rate": 0.05,
   "legacy_commit": "b0d4c776714f22e83de31127fbfbbd511f017dcd",
+  "long_training": {
+    "M": 15,
+    "N": 60,
+    "Q": 5,
+    "T": 5,
+    "dims_per_group": 8,
+    "record_every": 50,
+    "steps": 1000
+  },
   "numpy": "1.18.5",
   "predict_steps": 10,
   "python": "3.6.9",

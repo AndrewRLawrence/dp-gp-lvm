@@ -470,7 +470,7 @@ class DPGPLVM(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam",
-    ) -> MissingDataPrediction:
+    ) -> MissingDataPrediction[MissingDataBound]:
         """Fit q(X*) for partly observed test data, and predict the unobserved dimensions.
 
         Parameters

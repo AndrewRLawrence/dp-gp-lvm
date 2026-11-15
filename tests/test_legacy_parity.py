@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from golden import load, make_bgplvm, make_dp, make_dp_gp_lvm, make_mrd, meta
+from golden import assign, dp_gp_lvm_parameters, load, make_bgplvm, make_dp, make_dp_gp_lvm, make_mrd, meta
 
-from dp_gp_lvm import ARDRBFKernel, fit
+from dp_gp_lvm import DPGPLVM, ARDRBFKernel, fit
 from dp_gp_lvm._init import nearest_neighbour, pca_latent_init
 from dp_gp_lvm._numerics import positive
 from dp_gp_lvm.distributions import (
@@ -277,3 +277,21 @@ def test_prediction_trajectory(case: str, prefix: str) -> None:
     close(np.array(history), expected[:-1], rtol=LEGACY_ADAM_RTOL)
     with torch.no_grad():
         _check_bound(case, prefix, "adam.final", model, y_test, latents.mean, latents.variance, 1e-8)
+
+
+@pytest.mark.slow
+def test_long_training_follows_the_legacy_code() -> None:
+    """Over 1000 Adam steps, the port must follow the legacy optimisation and reach the same groups.
+
+    Rounding differences grow slowly in a non-convex optimisation, so the tolerance is looser than at the start.
+    """
+    arrays = load("dp_gp_lvm_long_training")
+    info = meta()["long_training"]
+    model = DPGPLVM(arrays["in.y_train"], info["Q"], info["M"], info["T"], seed=0)
+    assign(dp_gp_lvm_parameters(model), arrays)
+    every = info["record_every"]
+    history = fit(model, info["steps"], learning_rate=meta()["learning_rate"], optimiser="legacy")
+    ours = np.array([*history[::every], model.objective().detach().item()])
+    close(ours, arrays[f"train.adam.objectives_every_{every}"], rtol=1e-4)
+    expected_groups = arrays["train.adam.final_assignments"].argmax(axis=-1)
+    np.testing.assert_array_equal(model.assignments.argmax(dim=-1).numpy(), expected_groups)

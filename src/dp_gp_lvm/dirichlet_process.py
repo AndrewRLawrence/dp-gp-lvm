@@ -156,3 +156,13 @@ class DirichletProcess(nn.Module):
             The objective as a scalar.
         """
         return -self.elbo()
+
+    def forward(self) -> torch.Tensor:
+        """Return the objective. This is the same as :meth:`objective`.
+
+        Returns
+        -------
+        torch.Tensor
+            The objective as a scalar.
+        """
+        return self.objective()

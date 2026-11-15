@@ -176,3 +176,13 @@ class LatentVariableModel(nn.Module):
             The objective as a scalar.
         """
         raise NotImplementedError
+
+    def forward(self) -> torch.Tensor:
+        """Return the training objective. This is the same as :meth:`objective`.
+
+        Returns
+        -------
+        torch.Tensor
+            The objective as a scalar.
+        """
+        return self.objective()

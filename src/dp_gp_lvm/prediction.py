@@ -93,8 +93,10 @@ class LatentPrediction:
 
 
 @dataclass(frozen=True)
-class MissingDataPrediction:
+class MissingDataPrediction[BoundT: (MissingDataBound, ViewsMissingDataBound)]:
     """The optimised q(X*) and the predictive distribution for partly observed test data.
+
+    The type parameter is :class:`MissingDataBound` for single-view models and :class:`ViewsMissingDataBound` for MRD.
 
     Attributes
     ----------
@@ -110,7 +112,7 @@ class MissingDataPrediction:
 
     latent_mean: torch.Tensor
     latent_variance: torch.Tensor
-    bound: MissingDataBound | ViewsMissingDataBound
+    bound: BoundT
     history: list[float] = field(default_factory=list)
 
 

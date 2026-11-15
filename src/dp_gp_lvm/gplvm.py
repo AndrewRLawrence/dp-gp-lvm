@@ -379,7 +379,7 @@ class BayesianGPLVM(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam",
-    ) -> MissingDataPrediction:
+    ) -> MissingDataPrediction[MissingDataBound]:
         """Fit q(X*) for partly observed test data, and predict the unobserved dimensions.
 
         Parameters
@@ -691,7 +691,7 @@ class MRD(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam",
-    ) -> MissingDataPrediction:
+    ) -> MissingDataPrediction[ViewsMissingDataBound]:
         """Fit q(X*) for the observed test views, and predict the other views.
 
         Parameters
