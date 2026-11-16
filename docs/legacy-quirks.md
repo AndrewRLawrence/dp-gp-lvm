@@ -4,10 +4,11 @@ Version 1.0.0 ports the legacy TensorFlow 1.15 code to PyTorch exactly, so the p
 behaviours that are bugs. This document compares each one with the source papers, describes the fix, and gives the
 measured effect of each fix on the results. The next version fixes all seven.
 
-Each fix has its own commit, a test against the paper formula, and an entry under "Fixed" in `CHANGELOG.md`.
-`tests/legacy_reference.py` keeps the legacy formulas of all outputs that the fixes change. The parity tests compare
-this module with the legacy golden values, so they still prove what the legacy code computed. The library outputs that
-the fixes do not change, for example the training objective and the predictive mean, still give the legacy values.
+Each fix has a test against the paper formula and an entry under "Fixed" in `CHANGELOG.md`. Each fix also has its own
+commit in [PR #6](https://github.com/AndrewRLawrence/dp-gp-lvm/pull/6). `tests/legacy_reference.py` keeps the legacy
+formulas of all outputs that the fixes change. The parity tests compare this module with the legacy golden values, so
+they still prove what the legacy code computed. The library outputs that the fixes do not change, for example the
+training objective and the predictive mean, still give the legacy values.
 
 ## Sources
 
@@ -35,6 +36,8 @@ of the training data and the test data.
 | 7 | A `(D,)` minus `(D, 1)` term broadcasts to `(D, D)` in the test free energy. | DP-GP-LVM | Very high | Fixed | oi-VAE: yes, a lot. Missing data: less than 1% |
 
 ## The order of the commits
+
+PR #6 has one commit for each of these steps, in this order.
 
 1. A test-only legacy reference (`tests/legacy_reference.py`). The parity tests then do not depend on the library
    formulas that the fixes change.
@@ -192,9 +195,9 @@ of the training data and the test data.
 
 ### Method
 
-- **Code.** The baseline is the legacy code of version 1.0.0 (`e494060`). "All fixes" is the library after the item 4
-  commit. Each column "Item N" is the baseline with only that fix. A measurement script makes these columns from the
-  legacy formulas in `tests/legacy_reference.py` and the fixed library functions. The script is not in the repository.
+- **Code.** The baseline is the legacy code of version 1.0.0 (`e494060`). "All fixes" is the library of PR #6. Each
+  column "Item N" is the baseline with only that fix. A measurement script makes these columns from the legacy formulas
+  in `tests/legacy_reference.py` and the fixed library functions. The script is not in the repository.
 - **One training run for each model.** Items 1, 2, 3, 5, 6, and 7 do not change the training. Thus, each model trains
   once with the legacy code, and all variants use the same trained model.
   - Items 1 and 2 change only the covariance at a given q(X\*). They use the q(X\*) of the baseline.
