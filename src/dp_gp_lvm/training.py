@@ -1,4 +1,4 @@
-"""The training loop: Adam and then L-BFGS on the model objective."""
+"""The training loop: Adam and then L-BFGS on the model objective, or Adam only for a stochastic objective."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def fit(
     iterations: int,
     learning_rate: float = 0.05,
     *,
-    optimiser: OptimiserName = "adam-lbfgs",
+    optimiser: OptimiserName | None = None,
     callback: Callable[[int, float], None] | None = None,
 ) -> list[float]:
     """Minimise the objective of a model.
@@ -36,6 +36,10 @@ def fit(
     The default optimiser does Adam steps for the first fifth of the iterations, and then L-BFGS steps until the
     objective converges. See :func:`~dp_gp_lvm.optim.minimise`. The Adam settings are the same as in the legacy
     TensorFlow experiments: ``betas=(0.9, 0.999)`` and ``eps=1e-8``.
+
+    A model with the attribute ``stochastic`` set to true has an objective that changes between evaluations, for
+    example an SVI model with new samples for each evaluation. The line search of L-BFGS cannot use such an
+    objective. Thus, the default optimiser for a stochastic model is ``"adam"``.
 
     Parameters
     ----------
@@ -45,9 +49,9 @@ def fit(
         The maximum number of optimiser steps.
     learning_rate : float, default 0.05
         The Adam learning rate.
-    optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+    optimiser : {"adam-lbfgs", "adam", "legacy"}, optional
         ``"adam"`` does Adam steps only. ``"legacy"`` does Adam steps with the numerics of TensorFlow 1.15. Use it to
-        reproduce legacy runs exactly.
+        reproduce legacy runs exactly. The default is ``"adam-lbfgs"``, or ``"adam"`` for a stochastic model.
     callback : callable, optional
         A function that the loop calls after each step with the step index and the objective before the step.
 
@@ -55,6 +59,20 @@ def fit(
     -------
     list of float
         The objective before each step. If L-BFGS stops early, the list is shorter than ``iterations``.
+
+    Raises
+    ------
+    ValueError
+        If the model is stochastic and the optimiser is ``"adam-lbfgs"``.
     """
+    stochastic = bool(getattr(model, "stochastic", False))
+    if optimiser is None:
+        optimiser = "adam" if stochastic else "adam-lbfgs"
+    elif stochastic and optimiser == "adam-lbfgs":
+        msg = (
+            "L-BFGS cannot minimise a stochastic objective. Use optimiser='adam', or make the model with "
+            "sampling='fixed'."
+        )
+        raise ValueError(msg)
     parameters = [p for p in model.parameters() if p.requires_grad]
     return minimise(model.objective, parameters, iterations, learning_rate, optimiser=optimiser, callback=callback)

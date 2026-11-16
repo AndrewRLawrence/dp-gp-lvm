@@ -71,10 +71,13 @@ def fit_restarts[M: Trainable](
     iterations: int,
     learning_rate: float = 0.05,
     *,
-    optimiser: OptimiserName = "adam-lbfgs",
+    optimiser: OptimiserName | None = None,
     callback: Callable[[int, int, float], None] | None = None,
 ) -> Restarts[M]:
     """Train one model for each seed with :func:`~dp_gp_lvm.fit`. Keep the model with the lowest final objective.
+
+    If a model has an ``evaluate`` method, the final objective is its result. The SVI models have this method. It
+    gives an estimate of the objective with the same samples for each model, so the values are comparable.
 
     The restarts run one after the other. The function keeps only the best model so far. Thus, not more than two
     models use memory at the same time. If two restarts have the same final objective, the first restart wins.
@@ -91,8 +94,8 @@ def fit_restarts[M: Trainable](
         The maximum number of optimiser steps of each restart.
     learning_rate : float, default 0.05
         The Adam learning rate.
-    optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
-        The optimiser. See :func:`~dp_gp_lvm.fit`.
+    optimiser : {"adam-lbfgs", "adam", "legacy"}, optional
+        The optimiser. See :func:`~dp_gp_lvm.fit` for the default.
     callback : callable, optional
         A function that the loop calls after each step with the seed, the step index, and the objective before the
         step.
@@ -126,8 +129,9 @@ def fit_restarts[M: Trainable](
         model = build(seed)
         step_callback = None if callback is None else partial(callback, seed)
         histories.append(fit(model, iterations, learning_rate, optimiser=optimiser, callback=step_callback))
+        final_objective = getattr(model, "evaluate", model.objective)
         with torch.no_grad():
-            objectives.append(float(model.objective()))
+            objectives.append(float(final_objective()))
         if best is None or _rank(objectives[index]) < _rank(objectives[best_index]):
             best, best_index = model, index
         del model  # Release a model that is not the best before the next restart builds a new model.

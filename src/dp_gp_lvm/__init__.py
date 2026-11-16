@@ -47,6 +47,7 @@ from dp_gp_lvm.prediction import (
     ViewsMissingDataBound,
 )
 from dp_gp_lvm.restarts import Restarts, fit_restarts
+from dp_gp_lvm.svi import SVIBayesianGPLVM, SVIModel
 from dp_gp_lvm.training import fit
 
 __version__ = version("dp-gp-lvm")
@@ -85,6 +86,8 @@ __all__ = [
     "PoissonLikelihood",
     "ProductKernel",
     "Restarts",
+    "SVIBayesianGPLVM",
+    "SVIModel",
     "StandardNormalPrior",
     "StationaryKernel",
     "StudentTLikelihood",

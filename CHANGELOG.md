@@ -48,6 +48,16 @@ This file records the notable changes of each version. The format follows
   model optimises only the free parameters of the test points.
 - `LatentPrior`, `StandardNormalPrior`, and `JointLatents`. `kl_divergence()`, `joint_latents()`, and
   `test_marginals()` are methods of the base class of the models.
+- `SVIBayesianGPLVM`: the Bayesian GP-LVM with stochastic variational inference (SVI). It uses the doubly stochastic
+  lower bound of Lalchand, Ravuri, and Lawrence (AISTATS 2022). The bound keeps q(U) as parameters and uses samples
+  of the latent points. Thus, the model works with each kernel family (`kernel=`), each likelihood (`likelihood=`),
+  each prior on the latent space (`latent_prior=`), mini-batches (`batch_size=`), and missing values (`NaN`).
+  - `sampling="fresh"` draws new samples for each evaluation of the objective. This is the default.
+  - `sampling="fixed"` keeps the samples. The objective is then deterministic, so `"adam-lbfgs"` works.
+  - `evaluate()` gives a deterministic estimate of the objective with many samples.
+  - For an RBF kernel and Gaussian noise, the bound with the best q(U) is the collapsed bound of `BayesianGPLVM`.
+    The tests use this fact.
+  - `SVIModel` is the base class. `dp_gp_lvm._svi_bound` has the shared steps of the bound.
 - Likelihoods for data that is not Gaussian, in `dp_gp_lvm.likelihoods`. A likelihood gives `p(y | f)` for each
   observed value and its function value. The SVI models use them.
   - `GaussianLikelihood`: the noise of the paper, with closed forms.
@@ -69,6 +79,10 @@ This file records the notable changes of each version. The format follows
   the noise precision in its `noise_precision` property, as before. The results of the models do not change.
 - `covariance_matrix` and `covariance_diag` have no `include_noise` argument. To get the covariance of noisy data,
   add the noise variance to the diagonal.
+- The default of the `optimiser` argument of `fit` and `fit_restarts` is `None`. It selects `"adam-lbfgs"`, as
+  before, or `"adam"` for a model with a stochastic objective. `fit` raises an error if a stochastic model gets
+  `"adam-lbfgs"`.
+- `fit_restarts` uses the `evaluate()` method of a model for the final objective, if the model has this method.
 - `"adam-lbfgs"` makes each gradient contiguous before the L-BFGS step. `torch.optim.LBFGS` cannot read a gradient
   that passed through a transpose.
 - `ARDRBFKernel.prior_log_likelihood` does not include the noise precision. Use `hyperprior_log_likelihood()` of the
