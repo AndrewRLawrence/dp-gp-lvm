@@ -197,7 +197,9 @@ PR #6 has one commit for each of these steps, in this order.
 
 - **Code.** The baseline is the legacy code of version 1.0.0 (`e494060`). "All fixes" is the library of PR #6. Each
   column "Item N" is the baseline with only that fix. A measurement script makes these columns from the legacy formulas
-  in `tests/legacy_reference.py` and the fixed library functions. The script is not in the repository.
+  in `tests/legacy_reference.py` and the fixed library functions. The tag
+  [`legacy-fixes-measurements`](https://github.com/AndrewRLawrence/dp-gp-lvm/tree/legacy-fixes-measurements) keeps
+  the scripts as they ran, with the code versions and the commands. The tag is not part of `main`.
 - **One training run for each model.** Items 1, 2, 3, 5, 6, and 7 do not change the training. Thus, each model trains
   once with the legacy code, and all variants use the same trained model.
   - Items 1 and 2 change only the covariance at a given q(X\*). They use the q(X\*) of the baseline.
