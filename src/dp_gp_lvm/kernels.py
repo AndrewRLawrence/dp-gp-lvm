@@ -1,10 +1,12 @@
-r"""The exponentiated quadratic (RBF) kernel with ARD weights and its psi statistics.
+r"""Kernels with ARD weights. The exponentiated quadratic (RBF) kernel also has psi statistics.
 
-The kernel is batched. Each of the ``B`` batch entries has its own hyperparameters:
+Each kernel is batched. Each of the ``B`` batch entries has its own hyperparameters. For example, the RBF kernel is:
 
 .. math::
 
     k_b(x_i, x_j) = \sigma_b^2 \exp\Big(-\tfrac{1}{2} \sum_q \gamma_{b,q} (x_{i,q} - x_{j,q})^2\Big)
+
+The ARD weights :math:`\gamma` scale the input dimensions. A weight of zero removes the dimension from the kernel.
 
 The psi statistics are the expectations of the kernel under a factorised Gaussian q(X).
 Section C of the supplemental material of the ICML 2019 paper gives the formulas.
@@ -12,7 +14,10 @@ Section C of the supplemental material of the ICML 2019 paper gives the formulas
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Self
 
 import torch
 
@@ -20,25 +25,40 @@ from dp_gp_lvm._numerics import JITTER, batch_eye, transpose
 from dp_gp_lvm.distributions import log_normal_log_pdf
 
 
-@dataclass(frozen=True, eq=False)
-class ARDRBFKernel:
-    """A batch of RBF kernels with ARD weights.
+class Kernel(ABC):
+    """The base class for a batch of ``B`` kernels with ARD weights.
 
-    The kernel holds tensors, not parameters. The models make a new kernel for each objective evaluation.
-
-    Parameters
-    ----------
-    ard_weights : torch.Tensor
-        The ARD weights (inverse squared length scales), with the shape ``(B, Q)``.
-    signal_variance : torch.Tensor
-        The signal variance, with the shape ``(B, 1)``.
-    noise_precision : torch.Tensor
-        The precision of the Gaussian noise, with the shape ``(B, 1)``.
+    A kernel holds tensors, not parameters. The models make a new kernel for each objective evaluation.
+    Each hyperparameter is positive and has the shape ``(B, K)``.
     """
 
-    ard_weights: torch.Tensor
-    signal_variance: torch.Tensor
-    noise_precision: torch.Tensor
+    if TYPE_CHECKING:
+        # Each kernel class gives the ARD weights as a dataclass field or as a property. A property here at run time
+        # would become the default value of the dataclass field.
+        @property
+        def ard_weights(self) -> torch.Tensor:
+            """The ARD weights, with the shape ``(B, Q)``. A large weight means that the kernel uses that dimension."""
+            ...
+
+    @property
+    @abstractmethod
+    def hyperparameters(self) -> dict[str, torch.Tensor]:
+        """The value of each hyperparameter, with the shape ``(B, K)``."""
+
+    @abstractmethod
+    def select(self, index: slice | torch.Tensor) -> Self:
+        """Return the kernels of some batch entries.
+
+        Parameters
+        ----------
+        index : slice or torch.Tensor
+            The batch entries to keep.
+
+        Returns
+        -------
+        Kernel
+            A kernel batch with the selected entries.
+        """
 
     @property
     def batch_size(self) -> int:
@@ -48,20 +68,11 @@ class ARDRBFKernel:
     @property
     def prior_log_likelihood(self) -> torch.Tensor:
         """The sum of the standard log-normal log densities of all hyperparameters."""
-        terms = [
-            log_normal_log_pdf(self.ard_weights).sum(),
-            log_normal_log_pdf(self.signal_variance).sum(),
-            log_normal_log_pdf(self.noise_precision).sum(),
-        ]
-        return torch.stack(terms).sum()
+        return torch.stack([log_normal_log_pdf(value).sum() for value in self.hyperparameters.values()]).sum()
 
+    @abstractmethod
     def covariance_matrix(
-        self,
-        input_0: torch.Tensor,
-        input_1: torch.Tensor | None = None,
-        *,
-        include_noise: bool = False,
-        include_jitter: bool = False,
+        self, input_0: torch.Tensor, input_1: torch.Tensor | None = None, *, include_jitter: bool = False
     ) -> torch.Tensor:
         """Return the covariance matrix between two sets of inputs.
 
@@ -71,8 +82,143 @@ class ARDRBFKernel:
             The first inputs, with the shape ``(N0, Q)``.
         input_1 : torch.Tensor, optional
             The second inputs, with the shape ``(N1, Q)``. If you do not give them, the kernel uses ``input_0``.
-        include_noise : bool, default False
-            If true, add the noise variance to the diagonal. This applies only when ``input_1`` is not given.
+        include_jitter : bool, default False
+            If true, add a small jitter to the diagonal. This applies only when ``input_1`` is not given.
+
+        Returns
+        -------
+        torch.Tensor
+            The covariance matrices, with the shape ``(B, N0, N1)``.
+        """
+
+    @abstractmethod
+    def covariance_diag(self, input_0: torch.Tensor, *, include_jitter: bool = False) -> torch.Tensor:
+        """Return the diagonal of the covariance matrix of one set of inputs.
+
+        Parameters
+        ----------
+        input_0 : torch.Tensor
+            The inputs, with the shape ``(N, Q)``.
+        include_jitter : bool, default False
+            If true, add a small jitter.
+
+        Returns
+        -------
+        torch.Tensor
+            The diagonals, with the shape ``(B, N)``.
+        """
+
+
+class ElementaryKernel(Kernel):
+    """The base class for a kernel that is not a combination of other kernels.
+
+    Make each subclass a frozen dataclass. Its fields are the hyperparameters, each with the shape ``(B, K)``.
+    The class is then a kernel family: a model reads :meth:`hyperparameter_shapes` to make the parameters, and calls
+    :meth:`build` with their values.
+    """
+
+    @classmethod
+    @abstractmethod
+    def hyperparameter_shapes(cls, num_input_dims: int) -> dict[str, tuple[int, ...]]:
+        """Return the shape of each hyperparameter of one kernel of the batch.
+
+        Parameters
+        ----------
+        num_input_dims : int
+            The number of input dimensions ``Q``.
+
+        Returns
+        -------
+        dict of str to tuple of int
+            The shape of each hyperparameter without the batch dimension, for example ``{"ard_weights": (Q,)}``.
+        """
+
+    @classmethod
+    def build(cls, values: Mapping[str, torch.Tensor]) -> Self:
+        """Return a kernel batch from the hyperparameter values.
+
+        Parameters
+        ----------
+        values : mapping of str to torch.Tensor
+            The value of each hyperparameter of :meth:`hyperparameter_shapes`, with the shape ``(B, K)``.
+
+        Returns
+        -------
+        ElementaryKernel
+            The kernel batch.
+        """
+        return cls(**values)
+
+    @property
+    def hyperparameters(self) -> dict[str, torch.Tensor]:
+        """The value of each hyperparameter, with the shape ``(B, K)``."""
+        return {name: getattr(self, name) for name in self.hyperparameter_shapes(1)}
+
+    def select(self, index: slice | torch.Tensor) -> Self:
+        """Return the kernels of some batch entries.
+
+        Parameters
+        ----------
+        index : slice or torch.Tensor
+            The batch entries to keep.
+
+        Returns
+        -------
+        ElementaryKernel
+            A kernel batch with the selected entries.
+        """
+        return self.build({name: value[index] for name, value in self.hyperparameters.items()})
+
+
+def _add_jitter(k: torch.Tensor) -> torch.Tensor:
+    """Add the jitter to the diagonal of each matrix in a batch with the shape ``(B, N, N)``."""
+    return k + JITTER * batch_eye(k.shape[1], k.shape[0], k)
+
+
+@dataclass(frozen=True, eq=False)
+class ARDRBFKernel(ElementaryKernel):
+    """A batch of RBF kernels with ARD weights.
+
+    This kernel has psi statistics, so the models with the collapsed lower bound can use it.
+
+    Parameters
+    ----------
+    ard_weights : torch.Tensor
+        The ARD weights (inverse squared length scales), with the shape ``(B, Q)``.
+    signal_variance : torch.Tensor
+        The signal variance, with the shape ``(B, 1)``.
+    """
+
+    ard_weights: torch.Tensor
+    signal_variance: torch.Tensor
+
+    @classmethod
+    def hyperparameter_shapes(cls, num_input_dims: int) -> dict[str, tuple[int, ...]]:
+        """Return the shapes of the ARD weights ``(Q,)`` and of the signal variance ``(1,)``.
+
+        Parameters
+        ----------
+        num_input_dims : int
+            The number of input dimensions ``Q``.
+
+        Returns
+        -------
+        dict of str to tuple of int
+            The shape of each hyperparameter without the batch dimension.
+        """
+        return {"ard_weights": (num_input_dims,), "signal_variance": (1,)}
+
+    def covariance_matrix(
+        self, input_0: torch.Tensor, input_1: torch.Tensor | None = None, *, include_jitter: bool = False
+    ) -> torch.Tensor:
+        """Return the covariance matrix between two sets of inputs.
+
+        Parameters
+        ----------
+        input_0 : torch.Tensor
+            The first inputs, with the shape ``(N0, Q)``.
+        input_1 : torch.Tensor, optional
+            The second inputs, with the shape ``(N1, Q)``. If you do not give them, the kernel uses ``input_0``.
         include_jitter : bool, default False
             If true, add a small jitter to the diagonal. This applies only when ``input_1`` is not given.
 
@@ -87,29 +233,15 @@ class ARDRBFKernel:
         xx = -0.5 * (x_gamma**2).sum(dim=-1, keepdim=True)
         zz = xx if input_1 is None else -0.5 * (z_gamma**2).sum(dim=-1, keepdim=True)
         k = self.signal_variance.unsqueeze(-1) * torch.exp(xx + transpose(zz) + x_gamma @ transpose(z_gamma))
-        if input_1 is None:
-            eye = batch_eye(k.shape[1], k.shape[0], k)
-            if include_noise:
-                k = k + torch.reciprocal(self.noise_precision.unsqueeze(-1)) * eye
-            if include_jitter:
-                k = k + JITTER * eye
-        return k
+        return _add_jitter(k) if input_1 is None and include_jitter else k
 
-    def covariance_diag(
-        self,
-        input_0: torch.Tensor,
-        *,
-        include_noise: bool = False,
-        include_jitter: bool = False,
-    ) -> torch.Tensor:
+    def covariance_diag(self, input_0: torch.Tensor, *, include_jitter: bool = False) -> torch.Tensor:
         """Return the diagonal of the covariance matrix of one set of inputs.
 
         Parameters
         ----------
         input_0 : torch.Tensor
             The inputs, with the shape ``(N, Q)``.
-        include_noise : bool, default False
-            If true, add the noise variance.
         include_jitter : bool, default False
             If true, add a small jitter.
 
@@ -120,11 +252,7 @@ class ARDRBFKernel:
         """
         ones = torch.ones((1, input_0.shape[0]), dtype=input_0.dtype, device=input_0.device)
         k = self.signal_variance * ones
-        if include_noise:
-            k = k + torch.reciprocal(self.noise_precision)
-        if include_jitter:
-            k = k + JITTER
-        return k
+        return k + JITTER if include_jitter else k
 
     def psi_0(
         self, inducing_input: torch.Tensor, latent_mean: torch.Tensor, latent_variance: torch.Tensor

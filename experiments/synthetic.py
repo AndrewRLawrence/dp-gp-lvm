@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from dp_gp_lvm import DPGPLVM, ARDRBFKernel, BayesianGPLVM
+from dp_gp_lvm._numerics import JITTER
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
 from experiments._common import (
     Defaults,
@@ -86,12 +87,10 @@ def make_data(variant: Variant, num_samples: int = 100) -> tuple[np.ndarray, np.
     dims_per_function = variant.num_dims // len(functions)
     columns, truth = [], []
     for index, (ard, beta) in enumerate(functions):
-        kernel = ARDRBFKernel(
-            torch.tensor([ard], dtype=torch.float64),
-            torch.ones(1, 1, dtype=torch.float64),
-            torch.tensor([[beta]], dtype=torch.float64),
-        )
-        covariance = kernel.covariance_matrix(torch.as_tensor(x), include_noise=True, include_jitter=True)[0]
+        kernel = ARDRBFKernel(torch.tensor([ard], dtype=torch.float64), torch.ones(1, 1, dtype=torch.float64))
+        eye = torch.eye(num_samples, dtype=torch.float64)
+        # The noise comes before the jitter, as in the legacy code. The order sets the rounding of the samples.
+        covariance = kernel.covariance_matrix(torch.as_tensor(x))[0] + eye / beta + JITTER * eye
         columns.append(rng.multivariate_normal(np.zeros(num_samples), covariance.numpy(), size=dims_per_function).T)
         truth.extend([index] * dims_per_function)
     (y,) = standardise(np.hstack(columns))

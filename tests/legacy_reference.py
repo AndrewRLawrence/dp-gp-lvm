@@ -64,10 +64,9 @@ class SummedStats:
 
 
 def view_state(
-    kernel: ARDRBFKernel, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
+    kernel: ARDRBFKernel, beta: torch.Tensor, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
 ) -> State:
     num_samples, num_dims = y.shape
-    beta = kernel.noise_precision
     beta_b11 = beta.unsqueeze(-1)
     psi_0 = kernel.psi_0(x_u, mean, var)
     psi_1 = kernel.psi_1(x_u, mean, var)
@@ -139,7 +138,9 @@ def predict_view(
 
 
 def _bgplvm_state(model: BayesianGPLVM) -> State:
-    return view_state(model.kernel, model.x_u, model.latent_mean, model.latent_variance, model.y_train)
+    return view_state(
+        model.kernel, model.noise_precision, model.x_u, model.latent_mean, model.latent_variance, model.y_train
+    )
 
 
 def _bgplvm_new_data_bound(model: BayesianGPLVM, y_test: ArrayInput, mean: torch.Tensor, var: torch.Tensor):
@@ -164,8 +165,10 @@ def _bgplvm_missing_data_bound(model: BayesianGPLVM, y_observed: ArrayInput, mea
 
 def _mrd_test_bound(model: MRD, views: Sequence[torch.Tensor], mean: torch.Tensor, var: torch.Tensor):
     states = [
-        view_state(kernel, x_u, model.latent_mean, model.latent_variance, y)
-        for kernel, x_u, y in zip(model.kernels, model.x_us, model.views_train, strict=True)
+        view_state(kernel, beta, x_u, model.latent_mean, model.latent_variance, y)
+        for kernel, beta, x_u, y in zip(
+            model.kernels, model.noise_precision, model.x_us, model.views_train, strict=True
+        )
     ]
     f_hat = torch.stack([s.f_hat for s in states]).sum()
     stats = [summed_test_stats(state, x_u, mean, var) for state, x_u in zip(states, model.x_us, strict=True)]
@@ -202,7 +205,7 @@ def dp_gp_lvm_state(model: DPGPLVM) -> State:
     num_samples, num_dims = y.shape
     kernel = model.kernel
     mean, var = model.latent_mean, model.latent_variance
-    beta = kernel.noise_precision
+    beta = model.noise_precision
     beta_d11 = beta.unsqueeze(-1)
     psi_0 = kernel.psi_0(model.x_u, mean, var)
     psi_1 = kernel.psi_1(model.x_u, mean, var)

@@ -27,7 +27,7 @@ from dp_gp_lvm._numerics import (
     transpose,
 )
 from dp_gp_lvm._numerics import trace as batch_trace
-from dp_gp_lvm.distributions import kl_standard_normal
+from dp_gp_lvm.distributions import kl_standard_normal, log_normal_log_pdf
 from dp_gp_lvm.kernels import ARDRBFKernel
 from dp_gp_lvm.optim import OptimiserName
 from dp_gp_lvm.prediction import (
@@ -94,10 +94,12 @@ def _free_energy(
 
 
 def _view_state(
-    kernel: ARDRBFKernel, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
+    kernel: ARDRBFKernel, beta: torch.Tensor, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
 ) -> _ViewState:
-    """Return the training quantities and the free energy ``F̂`` of one kernel with batch size one."""
-    beta = kernel.noise_precision
+    """Return the training quantities and the free energy ``F̂`` of one kernel with batch size one.
+
+    ``beta`` is the noise precision, with the shape ``(1, 1)``.
+    """
     beta_b11 = beta.unsqueeze(-1)
     psi_0 = kernel.psi_0(x_u, mean, var)
     psi_1 = kernel.psi_1(x_u, mean, var)
@@ -145,7 +147,15 @@ def _predict_view(
     c_predict = solve_lower(state.l_a, solve_lower(state.l_uu, transpose(psi_1)))
     mean = state.beta * ((transpose(c_predict) @ state.c).squeeze(0) @ y_unobserved)
     variance = predictive_variance(
-        state.kernel, state.l_uu, state.l_a, state.psi_1, y_unobserved.unsqueeze(0), x_u, test_mean, test_variance
+        state.kernel,
+        state.beta,
+        state.l_uu,
+        state.l_a,
+        state.psi_1,
+        y_unobserved.unsqueeze(0),
+        x_u,
+        test_mean,
+        test_variance,
     )
     return mean, torch.diag_embed(variance.squeeze(1).T)
 
@@ -205,8 +215,7 @@ class BayesianGPLVM(LatentVariableModel):
     @property
     def kernel(self) -> ARDRBFKernel:
         """The ARD RBF kernel with the current hyperparameters."""
-        gamma, alpha, beta = (positive(raw) for raw in self.kernel_raw)
-        return ARDRBFKernel(gamma, alpha, beta)
+        return ARDRBFKernel(positive(self.kernel_raw[0]), positive(self.kernel_raw[1]))
 
     @property
     def ard_weights(self) -> torch.Tensor:
@@ -221,7 +230,7 @@ class BayesianGPLVM(LatentVariableModel):
     @property
     def noise_precision(self) -> torch.Tensor:
         """The noise precision, with the shape ``(1, 1)``."""
-        return self.kernel.noise_precision
+        return positive(self.kernel_raw[2])
 
     @property
     def inducing_input(self) -> torch.Tensor:
@@ -229,7 +238,19 @@ class BayesianGPLVM(LatentVariableModel):
         return self.x_u
 
     def _state(self) -> _ViewState:
-        return _view_state(self.kernel, self.x_u, self.latent_mean, self.latent_variance, self.y_train)
+        return _view_state(
+            self.kernel, self.noise_precision, self.x_u, self.latent_mean, self.latent_variance, self.y_train
+        )
+
+    def hyperprior_log_likelihood(self) -> torch.Tensor:
+        """Return the standard log-normal log density of the kernel hyperparameters and of the noise precision.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density as a scalar.
+        """
+        return self.kernel.prior_log_likelihood + log_normal_log_pdf(self.noise_precision).sum()
 
     def kl_divergence(self) -> torch.Tensor:
         """Return KL(q(X) || p(X)).
@@ -259,7 +280,7 @@ class BayesianGPLVM(LatentVariableModel):
         torch.Tensor
             The objective as a scalar.
         """
-        return -(self.elbo() + self.kernel.prior_log_likelihood)
+        return -(self.elbo() + self.hyperprior_log_likelihood())
 
     def new_data_bound(self, y_test: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor) -> NewDataBound:
         """Return the lower bound terms for fully observed test data at a given q(X*).
@@ -492,8 +513,8 @@ class MRD(LatentVariableModel):
         """The ARD RBF kernel of each view with the current hyperparameters."""
         kernels = []
         for raw in self.kernels_raw:
-            gamma, alpha, beta = (positive(p) for p in raw.parameters())
-            kernels.append(ARDRBFKernel(gamma, alpha, beta))
+            gamma, alpha, _ = (positive(p) for p in raw.parameters())
+            kernels.append(ARDRBFKernel(gamma, alpha))
         return kernels
 
     @property
@@ -509,7 +530,7 @@ class MRD(LatentVariableModel):
     @property
     def noise_precision(self) -> list[torch.Tensor]:
         """The noise precision of each view, each with the shape ``(1, 1)``."""
-        return [k.noise_precision for k in self.kernels]
+        return [positive(list(raw.parameters())[2]) for raw in self.kernels_raw]
 
     @property
     def inducing_input(self) -> list[torch.Tensor]:
@@ -519,9 +540,23 @@ class MRD(LatentVariableModel):
     def _states(self) -> list[_ViewState]:
         mean, var = self.latent_mean, self.latent_variance
         return [
-            _view_state(kernel, x_u, mean, var, y)
-            for kernel, x_u, y in zip(self.kernels, self.x_us, self.views_train, strict=True)
+            _view_state(kernel, beta, x_u, mean, var, y)
+            for kernel, beta, x_u, y in zip(
+                self.kernels, self.noise_precision, self.x_us, self.views_train, strict=True
+            )
         ]
+
+    def hyperprior_log_likelihood(self) -> torch.Tensor:
+        """Return the standard log-normal log density of the hyperparameters and noise precisions of all views.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density as a scalar.
+        """
+        kernels = [k.prior_log_likelihood for k in self.kernels]
+        noises = [log_normal_log_pdf(beta).sum() for beta in self.noise_precision]
+        return torch.stack(kernels + noises).sum()
 
     def kl_divergence(self) -> torch.Tensor:
         """Return KL(q(X) || p(X)).
@@ -551,8 +586,7 @@ class MRD(LatentVariableModel):
         torch.Tensor
             The objective as a scalar.
         """
-        priors = torch.stack([k.prior_log_likelihood for k in self.kernels]).sum()
-        return -(self.elbo() + priors)
+        return -(self.elbo() + self.hyperprior_log_likelihood())
 
     def _check_views(self, views_test: Sequence[ArrayInput], *, partial: bool) -> list[torch.Tensor]:
         views = [self._tensor(v) for v in views_test]

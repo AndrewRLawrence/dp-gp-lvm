@@ -17,8 +17,22 @@ This file records the notable changes of each version. The format follows
 - The experiment options `--restarts N` and `--model-seed`. The defaults train one model with the legacy seed, as
   before.
 - The keys `restart_seeds`, `restart_objectives`, and `best_seed` in the `.npz` and `.json` result files.
+- `Kernel`: the base class for a batch of kernels with ARD weights. `hyperparameters` gives the values and
+  `select` gives some entries of the batch.
+- `ElementaryKernel`: the base class for a kernel that is not a combination of other kernels. The class is a kernel
+  family: `hyperparameter_shapes` gives the shape of each hyperparameter, and `build` makes a kernel from the values.
+- `hyperprior_log_likelihood()` for `BayesianGPLVM` and `MRD`: the log density of the kernel hyperparameters and
+  of the noise precision. `DPGPLVM` had this method before.
 
 ### Changed
+
+- `ARDRBFKernel` does not hold the noise precision. Its arguments are `(ard_weights, signal_variance)`. Before, a
+  third argument gave the noise precision. The noise belongs to the likelihood, not to the kernel. Each model gives
+  the noise precision in its `noise_precision` property, as before. The results of the models do not change.
+- `covariance_matrix` and `covariance_diag` have no `include_noise` argument. To get the covariance of noisy data,
+  add the noise variance to the diagonal.
+- `ARDRBFKernel.prior_log_likelihood` does not include the noise precision. Use `hyperprior_log_likelihood()` of the
+  model for the log density of all hyperparameters.
 
 - `"adam-lbfgs"` is the default optimiser of `fit`, `fit_restarts`, `optimise_test_latents`, the prediction methods,
   and the experiments. Before, the default was `"adam"`. Thus, trained models and predictions with the default

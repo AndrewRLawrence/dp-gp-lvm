@@ -9,7 +9,7 @@ from importlib.metadata import version
 from dp_gp_lvm.dirichlet_process import DirichletProcess
 from dp_gp_lvm.dp_gp_lvm import DPGPLVM
 from dp_gp_lvm.gplvm import MRD, BayesianGPLVM
-from dp_gp_lvm.kernels import ARDRBFKernel
+from dp_gp_lvm.kernels import ARDRBFKernel, ElementaryKernel, Kernel
 from dp_gp_lvm.prediction import (
     LatentPrediction,
     MissingDataBound,
@@ -28,6 +28,8 @@ __all__ = [
     "ARDRBFKernel",
     "BayesianGPLVM",
     "DirichletProcess",
+    "ElementaryKernel",
+    "Kernel",
     "LatentPrediction",
     "MissingDataBound",
     "MissingDataPrediction",

@@ -144,6 +144,7 @@ def psi_2_of_each_point(
 
 def predictive_variance(
     kernel: ARDRBFKernel,
+    beta: torch.Tensor,
     l_uu: torch.Tensor,
     l_a: torch.Tensor,
     psi_1: torch.Tensor,
@@ -166,6 +167,8 @@ def predictive_variance(
     ----------
     kernel : ARDRBFKernel
         The kernel batch, with the batch size ``B``.
+    beta : torch.Tensor
+        The noise precision of each kernel, with the shape ``(B, 1)``.
     l_uu : torch.Tensor
         The Cholesky factors of ``K_uu``, with the shape ``(B, M, M)``.
     l_a : torch.Tensor
@@ -186,7 +189,6 @@ def predictive_variance(
     torch.Tensor
         The predictive variances, with the shape ``(N*, B, K)``.
     """
-    beta = kernel.noise_precision
     posterior, difference = predictive_operators(l_uu, l_a)
     scale = (posterior @ transpose(psi_1)) @ y
     psi_0_point = kernel.psi_0(inducing_input, test_mean[:1], test_variance[:1])

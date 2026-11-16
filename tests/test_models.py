@@ -13,6 +13,7 @@ from synthetic import smooth_data
 
 from dp_gp_lvm import DPGPLVM, MRD, ARDRBFKernel, BayesianGPLVM
 from dp_gp_lvm._numerics import positive
+from dp_gp_lvm.distributions import log_normal_log_pdf
 from dp_gp_lvm.gplvm import _view_state
 
 N, D, M, Q, T = 20, 6, 5, 3, 4
@@ -35,13 +36,13 @@ class TestBayesianGPLVM:
             model.x_u.detach().numpy(),
             kernel.ard_weights[0].detach().numpy(),
             kernel.signal_variance.detach().item(),
-            kernel.noise_precision.detach().item(),
+            model.noise_precision.detach().item(),
         )
         np.testing.assert_allclose(model._state().f_hat.detach().item(), expected, rtol=1e-9)
 
     def test_objective_is_negative_elbo_plus_hyperprior(self, y: np.ndarray) -> None:
         model = BayesianGPLVM(y, Q, M, seed=0)
-        expected = -(model.elbo() + model.kernel.prior_log_likelihood)
+        expected = -(model.elbo() + model.hyperprior_log_likelihood())
         torch.testing.assert_close(model.objective(), expected)
         torch.testing.assert_close(model(), expected)
 
@@ -50,16 +51,17 @@ class TestBayesianGPLVM:
         mean = torch.as_tensor(rng.standard_normal((N, Q)), dtype=torch.float64)
         var = torch.full((N, Q), 1e-12, dtype=torch.float64)
         gamma, alpha, beta = np.array([[0.8, 0.5, 1.2]]), np.array([[1.3]]), np.array([[20.0]])
-        kernel = ARDRBFKernel(*(torch.as_tensor(v, dtype=torch.float64) for v in (gamma, alpha, beta)))
-        f_hat = _view_state(kernel, mean, mean, var, torch.as_tensor(y)).f_hat
+        kernel = ARDRBFKernel(*(torch.as_tensor(v, dtype=torch.float64) for v in (gamma, alpha)))
+        f_hat = _view_state(kernel, torch.as_tensor(beta), mean, mean, var, torch.as_tensor(y)).f_hat
         expected = oracles.gp_log_marginal_likelihood(y, mean.numpy(), gamma[0], 1.3, 20.0)
         np.testing.assert_allclose(float(f_hat), expected, rtol=1e-6)
 
     def test_bound_is_below_the_exact_likelihood(self, y: np.ndarray, rng: np.random.Generator) -> None:
         mean = torch.as_tensor(rng.standard_normal((N, Q)), dtype=torch.float64)
         var = torch.full((N, Q), 1e-12, dtype=torch.float64)
-        kernel = ARDRBFKernel(*(torch.ones(1, k, dtype=torch.float64) for k in (Q, 1, 1)))
-        f_hat = _view_state(kernel, mean[:M], mean, var, torch.as_tensor(y)).f_hat
+        kernel = ARDRBFKernel(*(torch.ones(1, k, dtype=torch.float64) for k in (Q, 1)))
+        beta = torch.ones(1, 1, dtype=torch.float64)
+        f_hat = _view_state(kernel, beta, mean[:M], mean, var, torch.as_tensor(y)).f_hat
         exact = oracles.gp_log_marginal_likelihood(y, mean.numpy(), np.ones(Q), 1.0, 1.0)
         assert float(f_hat) < exact
 
@@ -109,6 +111,8 @@ class TestMRD:
         assert mrd.number_of_views == 2
         assert [v.shape[1] for v in mrd.views_train] == [2, 4]
         priors = sum(k.prior_log_likelihood for k in mrd.kernels)
+        priors = priors + sum(log_normal_log_pdf(beta).sum() for beta in mrd.noise_precision)
+        torch.testing.assert_close(mrd.hyperprior_log_likelihood(), priors)
         torch.testing.assert_close(mrd.objective(), -(mrd.elbo() + priors))
         assert len(mrd.ard_weights) == len(mrd.signal_variance) == len(mrd.noise_precision) == 2
         assert len(mrd.inducing_input) == 2
@@ -141,7 +145,7 @@ class TestDPGPLVM:
         randomise(bgplvm, rng)
         model = matching_dp_gp_lvm(bgplvm, y, expectation=expectation)
         torch.testing.assert_close(model.free_energy(), bgplvm._state().f_hat, rtol=1e-12, atol=1e-10)
-        torch.testing.assert_close(model.hyperprior_log_likelihood(), bgplvm.kernel.prior_log_likelihood)
+        torch.testing.assert_close(model.hyperprior_log_likelihood(), bgplvm.hyperprior_log_likelihood())
         torch.testing.assert_close(model.objective() - model.dp.objective(), bgplvm.objective(), rtol=1e-12, atol=1e-10)
 
     def test_mixture_equals_plug_in_for_hard_assignments(self, y: np.ndarray, rng: np.random.Generator) -> None:

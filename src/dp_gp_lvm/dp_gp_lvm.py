@@ -57,11 +57,6 @@ class _State:
     f_hat: torch.Tensor
 
 
-def _kernel_subset(kernel: ARDRBFKernel, dims: slice) -> ARDRBFKernel:
-    """Return the kernels of some observed dimensions from the plug-in kernel batch."""
-    return ARDRBFKernel(kernel.ard_weights[dims], kernel.signal_variance[dims], kernel.noise_precision[dims])
-
-
 def _free_energy(
     beta: torch.Tensor, l_a: torch.Tensor, whitened: torch.Tensor, psi_0: torch.Tensor, c: torch.Tensor, y: torch.Tensor
 ) -> torch.Tensor:
@@ -98,7 +93,7 @@ def _augmented_free_energy(
     The bound has the same form as the training bound (Damianou et al. 2016, section 4.1). The statistics of the
     augmented data are the sums of the training statistics and the test statistics.
     """
-    kernel = _kernel_subset(state.kernel, dims)
+    kernel = state.kernel.select(dims)
     psi_0 = state.psi_0[dims] + kernel.psi_0(x_u, test_mean, test_variance)
     psi_1 = torch.cat([state.psi_1[dims], kernel.psi_1(x_u, test_mean, test_variance)], dim=1)
     psi_2 = state.psi_2[dims] + kernel.psi_2(x_u, test_mean, test_variance)
@@ -205,11 +200,11 @@ class DPGPLVM(LatentVariableModel):
         For ``"plug_in"``, there is one kernel for each observed dimension (batch ``D``).
         For ``"mixture"``, there is one kernel for each DP atom (batch ``T``).
         """
-        gamma_atoms, sig_var_atoms, beta_atoms = self.dp_atoms
+        gamma_atoms, sig_var_atoms, _ = self.dp_atoms
         if self.expectation == "mixture":
-            return ARDRBFKernel(gamma_atoms, sig_var_atoms, beta_atoms)
+            return ARDRBFKernel(gamma_atoms, sig_var_atoms)
         phi = self.assignments
-        return ARDRBFKernel(phi @ gamma_atoms, phi @ sig_var_atoms, phi @ beta_atoms)
+        return ARDRBFKernel(phi @ gamma_atoms, phi @ sig_var_atoms)
 
     @property
     def ard_weights(self) -> torch.Tensor:
@@ -224,7 +219,8 @@ class DPGPLVM(LatentVariableModel):
     @property
     def noise_precision(self) -> torch.Tensor:
         """The noise precisions of the kernel batch, with the shape ``(D, 1)`` or ``(T, 1)``."""
-        return self.kernel.noise_precision
+        beta_atoms = positive(self.beta_atoms_raw)
+        return beta_atoms if self.expectation == "mixture" else self.assignments @ beta_atoms
 
     @property
     def inducing_input(self) -> torch.Tensor:
@@ -260,7 +256,7 @@ class DPGPLVM(LatentVariableModel):
         """Return the plug-in training quantities (kernel batch ``D``)."""
         kernel = self.kernel
         mean, var = self.latent_mean, self.latent_variance
-        beta = kernel.noise_precision
+        beta = self.noise_precision
         beta_d11 = beta.unsqueeze(-1)
         psi_0 = kernel.psi_0(self.x_u, mean, var)
         psi_1 = kernel.psi_1(self.x_u, mean, var)
@@ -277,7 +273,7 @@ class DPGPLVM(LatentVariableModel):
         phi_td = self.assignments.T
         kernel = self.kernel
         mean, var = self.latent_mean, self.latent_variance
-        beta_atoms = kernel.noise_precision
+        beta_atoms = self.noise_precision
         beta_t11 = beta_atoms.unsqueeze(-1)
         psi_0 = kernel.psi_0(self.x_u, mean, var)
         psi_1 = kernel.psi_1(self.x_u, mean, var)
@@ -427,15 +423,23 @@ class DPGPLVM(LatentVariableModel):
         D.2). The diagonal holds the variance of each test point.
         """
         unobserved = slice(num_observed, None)
-        kernel_u = _kernel_subset(state.kernel, unobserved)
+        kernel_u, beta_u = state.kernel.select(unobserved), state.beta[unobserved]
         l_uu, l_a = state.l_uu[unobserved], state.l_a[unobserved]
         y_unobserved_du_n1 = self.y_train[:, unobserved].T.unsqueeze(-1)
         psi_1 = kernel_u.psi_1(self.x_u, test_mean, test_variance)
         c_predict = solve_lower(l_a, solve_lower(l_uu, transpose(psi_1)))
         c_predict_c = transpose(c_predict) @ state.c[unobserved]
-        mean = (kernel_u.noise_precision * (c_predict_c @ y_unobserved_du_n1).squeeze(-1)).T
+        mean = (beta_u * (c_predict_c @ y_unobserved_du_n1).squeeze(-1)).T
         variance = predictive_variance(
-            kernel_u, l_uu, l_a, state.psi_1[unobserved], y_unobserved_du_n1, self.x_u, test_mean, test_variance
+            kernel_u,
+            beta_u,
+            l_uu,
+            l_a,
+            state.psi_1[unobserved],
+            y_unobserved_du_n1,
+            self.x_u,
+            test_mean,
+            test_variance,
         )
         return mean, torch.diag_embed(variance.squeeze(-1).T)
 

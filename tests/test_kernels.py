@@ -34,7 +34,7 @@ def setup(rng: np.random.Generator) -> dict[str, np.ndarray]:
 
 
 def kernel_of(s: dict[str, np.ndarray]) -> ARDRBFKernel:
-    return ARDRBFKernel(t(s["gamma"]), t(s["alpha"]), t(s["beta"]))
+    return ARDRBFKernel(t(s["gamma"]), t(s["alpha"]))
 
 
 def args(s: dict[str, np.ndarray], b: int) -> tuple[np.ndarray, float, float]:
@@ -45,19 +45,19 @@ def test_batch_size(setup: dict[str, np.ndarray]) -> None:
     assert kernel_of(setup).batch_size == B
 
 
-@pytest.mark.parametrize(("noise", "jitter"), [(False, False), (True, False), (False, True), (True, True)])
-def test_covariance_matrix_matches_oracle(setup: dict[str, np.ndarray], noise: bool, jitter: bool) -> None:
-    k = kernel_of(setup).covariance_matrix(t(setup["x"]), include_noise=noise, include_jitter=jitter)
+@pytest.mark.parametrize("jitter", [False, True])
+def test_covariance_matrix_matches_oracle(setup: dict[str, np.ndarray], jitter: bool) -> None:
+    k = kernel_of(setup).covariance_matrix(t(setup["x"]), include_jitter=jitter)
     for b in range(B):
-        expected = oracles.rbf_covariance(setup["x"], *args(setup, b), include_noise=noise, include_jitter=jitter)
+        expected = oracles.rbf_covariance(setup["x"], *args(setup, b), include_jitter=jitter)
         np.testing.assert_allclose(k[b].numpy(), expected, rtol=1e-12, atol=1e-14)
 
 
-def test_cross_covariance_ignores_noise_and_jitter(setup: dict[str, np.ndarray]) -> None:
+def test_cross_covariance_ignores_jitter(setup: dict[str, np.ndarray]) -> None:
     kernel = kernel_of(setup)
     plain = kernel.covariance_matrix(t(setup["x"]), t(setup["x1"]))
-    noisy = kernel.covariance_matrix(t(setup["x"]), t(setup["x1"]), include_noise=True, include_jitter=True)
-    torch.testing.assert_close(plain, noisy)
+    with_jitter = kernel.covariance_matrix(t(setup["x"]), t(setup["x1"]), include_jitter=True)
+    torch.testing.assert_close(plain, with_jitter)
     for b in range(B):
         expected = oracles.rbf_covariance(setup["x"], *args(setup, b), x1=setup["x1"])
         np.testing.assert_allclose(plain[b].numpy(), expected, rtol=1e-12, atol=1e-14)
@@ -66,11 +66,10 @@ def test_cross_covariance_ignores_noise_and_jitter(setup: dict[str, np.ndarray])
 def test_covariance_diag_is_the_matrix_diagonal(setup: dict[str, np.ndarray]) -> None:
     kernel = kernel_of(setup)
     x = t(setup["x"])
-    for noise in (False, True):
-        for jitter in (False, True):
-            full = kernel.covariance_matrix(x, include_noise=noise, include_jitter=jitter)
-            diag = kernel.covariance_diag(x, include_noise=noise, include_jitter=jitter)
-            torch.testing.assert_close(diag, torch.diagonal(full, dim1=-2, dim2=-1))
+    for jitter in (False, True):
+        full = kernel.covariance_matrix(x, include_jitter=jitter)
+        diag = kernel.covariance_diag(x, include_jitter=jitter)
+        torch.testing.assert_close(diag, torch.diagonal(full, dim1=-2, dim2=-1))
 
 
 def test_psi_statistics_match_oracles(setup: dict[str, np.ndarray]) -> None:
@@ -154,7 +153,7 @@ def random_inputs(
 
 
 def psi_statistics(gamma: torch.Tensor, alpha: torch.Tensor, *latents: torch.Tensor) -> tuple[torch.Tensor, ...]:
-    kernel = ARDRBFKernel(gamma, alpha, torch.ones_like(alpha))
+    kernel = ARDRBFKernel(gamma, alpha)
     return kernel.psi_1(*latents), kernel.psi_2(*latents)
 
 
@@ -192,7 +191,7 @@ def test_psi_statistics_do_not_save_the_legacy_intermediate_tensors(rng: np.rand
     """
     b, n, m, q = 3, 5, 4, 2
     gamma, alpha, *latents = random_inputs(rng, b, n, m, q)
-    kernel = ARDRBFKernel(gamma, alpha, torch.ones_like(alpha))
+    kernel = ARDRBFKernel(gamma, alpha)
     for statistic, largest in ((kernel.psi_1, n * b * m), (kernel.psi_2, n * b * m * m)):
         sizes: list[int] = []
 
@@ -207,8 +206,20 @@ def test_psi_statistics_do_not_save_the_legacy_intermediate_tensors(rng: np.rand
 
 
 def test_prior_log_likelihood_matches_oracle(setup: dict[str, np.ndarray]) -> None:
-    expected = sum(np.sum(oracles.log_normal_log_pdf(setup[k])) for k in ("gamma", "alpha", "beta"))
+    expected = sum(np.sum(oracles.log_normal_log_pdf(setup[k])) for k in ("gamma", "alpha"))
     np.testing.assert_allclose(float(kernel_of(setup).prior_log_likelihood), expected)
+
+
+def test_hyperparameters_build_and_select(setup: dict[str, np.ndarray]) -> None:
+    kernel = kernel_of(setup)
+    assert ARDRBFKernel.hyperparameter_shapes(Q) == {"ard_weights": (Q,), "signal_variance": (1,)}
+    values = kernel.hyperparameters
+    assert list(values) == ["ard_weights", "signal_variance"]
+    rebuilt = ARDRBFKernel.build(values)
+    torch.testing.assert_close(rebuilt.covariance_matrix(t(setup["x"])), kernel.covariance_matrix(t(setup["x"])))
+    last = kernel.select(slice(1, None))
+    assert last.batch_size == B - 1
+    torch.testing.assert_close(last.covariance_matrix(t(setup["x"])), kernel.covariance_matrix(t(setup["x"]))[1:])
 
 
 @settings(deadline=None, max_examples=30)
@@ -217,7 +228,7 @@ def test_prior_log_likelihood_matches_oracle(setup: dict[str, np.ndarray]) -> No
     gamma=arrays(np.float64, (1, 2), elements=st.floats(0.05, 5.0)),
 )
 def test_covariance_matrix_is_symmetric_positive_semidefinite(x: np.ndarray, gamma: np.ndarray) -> None:
-    kernel = ARDRBFKernel(t(gamma), t(np.ones((1, 1))), t(np.ones((1, 1))))
+    kernel = ARDRBFKernel(t(gamma), t(np.ones((1, 1))))
     k = kernel.covariance_matrix(t(x))[0]
     torch.testing.assert_close(k, k.T)
     assert torch.linalg.eigvalsh(k).min() > -1e-10
