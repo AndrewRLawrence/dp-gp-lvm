@@ -36,8 +36,14 @@ def build(seed: int) -> Quadratic:
 
 def test_fit_restarts_keeps_the_lowest_final_objective() -> None:
     calls: list[tuple[int, int, float]] = []
+    # Adam does all steps. L-BFGS would find the minimum of each quadratic in a few steps and stop.
     restarts = fit_restarts(
-        build, range(3), 20, learning_rate=0.1, callback=lambda seed, step, value: calls.append((seed, step, value))
+        build,
+        range(3),
+        20,
+        learning_rate=0.1,
+        optimiser="adam",
+        callback=lambda seed, step, value: calls.append((seed, step, value)),
     )
     assert isinstance(restarts, Restarts)
     assert restarts.seeds == (0, 1, 2)

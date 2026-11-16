@@ -10,7 +10,7 @@ import torch
 from torch import nn
 
 from dp_gp_lvm._numerics import inverse_softplus, positive
-from dp_gp_lvm.optim import OptimiserName, make_optimiser
+from dp_gp_lvm.optim import OptimiserName, minimise
 
 #: The initial variance of q(X*). The legacy code uses this value for all models.
 TEST_INITIAL_VARIANCE = 1.0
@@ -172,9 +172,11 @@ def optimise_test_latents(
     *,
     iterations: int,
     learning_rate: float,
-    optimiser: OptimiserName = "adam",
+    optimiser: OptimiserName = "adam-lbfgs",
 ) -> list[float]:
-    """Maximise a lower bound with respect to q(X*) with the Adam optimiser.
+    """Maximise a lower bound with respect to q(X*).
+
+    The loop minimises the negative lower bound with :func:`~dp_gp_lvm.optim.minimise`.
 
     The caller must freeze the model parameters. Only the q(X*) parameters change.
 
@@ -185,23 +187,21 @@ def optimise_test_latents(
     latents : TestLatents
         The q(X*) parameters to optimise. The function changes them in place.
     iterations : int
-        The number of optimiser steps.
+        The maximum number of optimiser steps.
     learning_rate : float
         The Adam learning rate.
-    optimiser : {"adam", "legacy"}, default "adam"
-        ``"legacy"`` copies the numerics of TensorFlow 1.15.
+    optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+        ``"adam-lbfgs"`` does Adam steps first, then L-BFGS steps. ``"adam"`` does Adam steps only. ``"legacy"`` does
+        Adam steps with the numerics of TensorFlow 1.15.
 
     Returns
     -------
     list of float
-        The lower bound before each step.
+        The lower bound before each step. If L-BFGS stops early, the list is shorter than ``iterations``.
     """
-    adam = make_optimiser(latents.parameters(), learning_rate, optimiser)
-    history: list[float] = []
-    for _ in range(iterations):
-        adam.zero_grad()
-        bound = lower_bound(latents.mean, latents.variance)
-        history.append(float(bound.detach()))
-        (-bound).backward()
-        adam.step()
-    return history
+
+    def objective() -> torch.Tensor:
+        return -lower_bound(latents.mean, latents.variance)
+
+    history = minimise(objective, list(latents.parameters()), iterations, learning_rate, optimiser=optimiser)
+    return [-value for value in history]

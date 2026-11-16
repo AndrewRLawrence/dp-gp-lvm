@@ -78,19 +78,25 @@ def parser(description: str, defaults: Defaults, name: str) -> argparse.Argument
     The defaults are the legacy hyperparameters. Use smaller values for a quick check.
     """
     p = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--iterations", type=int, default=defaults.iterations, help="Training steps.")
+    p.add_argument("--iterations", type=int, default=defaults.iterations, help="Maximum training steps.")
     p.add_argument(
-        "--predict-iterations", type=int, default=defaults.predict_iterations, help="Prediction steps for q(X*)."
+        "--predict-iterations",
+        type=int,
+        default=defaults.predict_iterations,
+        help="Maximum prediction steps for q(X*).",
     )
-    p.add_argument("--learning-rate", type=float, default=defaults.learning_rate, help="Adam learning rate.")
+    p.add_argument("--learning-rate", type=float, default=defaults.learning_rate, help="The Adam learning rate.")
     p.add_argument("--latent-dims", type=int, default=defaults.latent_dims, help="Latent dimensions Q.")
     p.add_argument("--inducing-points", type=int, default=defaults.inducing_points, help="Inducing points M.")
     p.add_argument("--truncation-level", type=int, default=defaults.truncation_level, help="DP truncation level T.")
     p.add_argument(
         "--optimiser",
-        choices=["adam", "legacy"],
-        default="adam",
-        help="'legacy' copies the Adam numerics of TensorFlow 1.15.",
+        choices=["adam-lbfgs", "adam", "legacy"],
+        default="adam-lbfgs",
+        help=(
+            "'adam-lbfgs' does Adam steps for the first fifth of the steps, then L-BFGS steps until convergence. "
+            "'adam' does Adam steps only. 'legacy' copies the Adam numerics of TensorFlow 1.15."
+        ),
     )
     p.add_argument("--output", type=Path, default=RESULTS_DIR / name, help="Directory for the results.")
     p.add_argument("--force", action="store_true", help="Run again, even if a result file exists.")
@@ -253,10 +259,10 @@ def train[M: Model](
     """
     seeds = run.model_seeds(default_seed)
     if len(seeds) == 1:
-        print(f"Training {label} for {run.iterations} steps with seed {seeds[0]}.")
+        print(f"Training {label} for up to {run.iterations} steps with seed {seeds[0]}.")
     else:
         names = ", ".join(str(seed) for seed in seeds)
-        print(f"Training {label} for {run.iterations} steps with {len(seeds)} restarts: seeds {names}.")
+        print(f"Training {label} for up to {run.iterations} steps with {len(seeds)} restarts: seeds {names}.")
 
     def log(seed: int, step: int, value: float) -> None:
         if run.log_every > 0 and step % run.log_every == 0:
@@ -385,7 +391,7 @@ def train_and_predict(
     """
     trained = train(build, run, label, default_seed)
     model = trained.model
-    print(f"Fitting q(X*) for {label} for {run.predict_iterations} steps.")
+    print(f"Fitting q(X*) for {label} for up to {run.predict_iterations} steps.")
     if isinstance(model, MRD):
         views_result = model.predict_missing_data(
             [y_observed], iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser

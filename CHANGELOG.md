@@ -8,6 +8,10 @@ This file records the notable changes of each version. The format follows
 
 ### Added
 
+- `optimiser="adam-lbfgs"`: Adam steps for the first fifth of the iterations, then L-BFGS steps
+  (`torch.optim.LBFGS` with a strong Wolfe line search) until the objective converges. It uses no new dependency.
+  `dp_gp_lvm.optim.minimise` is the optimisation loop of `fit`, `fit_restarts`, and the q(X\*) fit.
+- The experiment option `--optimiser adam-lbfgs`.
 - `fit_restarts` and `Restarts`: train one model for each seed and keep the model with the lowest final objective.
   The objective is not convex, so restarts make a bad local optimum less likely.
 - The experiment options `--restarts N` and `--model-seed`. The defaults train one model with the legacy seed, as
@@ -16,6 +20,22 @@ This file records the notable changes of each version. The format follows
 
 ### Changed
 
+- `"adam-lbfgs"` is the default optimiser of `fit`, `fit_restarts`, `optimise_test_latents`, the prediction methods,
+  and the experiments. Before, the default was `"adam"`. Thus, trained models and predictions with the default
+  settings change. To get the old behaviour, use `optimiser="adam"` or `--optimiser adam`. `optimiser="legacy"` and
+  `LegacyAdam` do not change.
+- With `"adam-lbfgs"`, the history can be shorter than `iterations`, because L-BFGS stops when the objective
+  converges. `iterations`, `--iterations`, and `--predict-iterations` give the maximum number of steps.
+- These are the benchmark results of `"adam-lbfgs"` against `"adam"`, with 5 model seeds:
+  - `experiments.synthetic --variant two-func`, 1500 steps: the median final objective is 2282.0 against 2327.0.
+    Both optimisers find the true groups with 3 of the 5 seeds.
+  - `--variant four-func` with 30 inducing points, 2500 steps: the median final objective is 5410.2 against 6258.4.
+    `"adam-lbfgs"` gets the final objective of `"adam"` in 543 to 605 steps.
+  - The q(X\*) fit of `--missing` (DP-GP-LVM and Bayesian GP-LVM, 750 steps): the same lower bound and the same
+    ground-truth log-likelihood, with a median of 215 objective evaluations against 750.
+- A step of L-BFGS usually evaluates the objective one time, and not more than 25 times. If a trial point of the line
+  search makes a Cholesky factorisation fail, or gives an objective that is not finite, the line search makes the step
+  shorter.
 - `ARDRBFKernel.psi_2` and `ARDRBFKernel.psi_1` use less memory. A batched matrix product calculates the sum over
   the latent dimensions. Psi-2 does not make the `(B, N, M, M, Q)` tensor of the legacy code, and Psi-1 does not
   make the `(B, N, M, Q)` tensor. Memory use of Psi-2 is in proportion to `B x N x M²`. The values do not change.
