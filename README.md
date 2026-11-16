@@ -244,9 +244,10 @@ maths:
 - The experiments use one shared command-line interface.
 - The web GUI, the PoseTrack and horse scripts, and the unused models are removed.
 
-The port keeps some legacy behaviours that can be bugs, for example in the predictive variance.
-[CHANGELOG.md](CHANGELOG.md) lists them under "Known issues". [docs/legacy-quirks.md](docs/legacy-quirks.md) compares
-each one with the papers.
+Version 1.0.0 kept seven legacy behaviours that are bugs, for example in the predictive variance. The next version
+fixes them. [docs/legacy-quirks.md](docs/legacy-quirks.md) compares each one with the papers and measures the effect
+of each fix on the results. [CHANGELOG.md](CHANGELOG.md) lists the fixes under "Fixed". `tests/legacy_reference.py`
+keeps the legacy formulas, so the parity tests still compare them with the legacy code.
 
 ## Citation
 

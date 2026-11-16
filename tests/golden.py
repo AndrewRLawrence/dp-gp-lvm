@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from legacy_reference import LegacyDirichletProcess, use_legacy_dirichlet_process
 from torch import nn
 
 from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM, DirichletProcess
@@ -86,12 +87,15 @@ def dp_gp_lvm_parameters(model: DPGPLVM) -> dict[str, nn.Parameter]:
 
 
 def make_dp(case: str) -> tuple[DirichletProcess, dict[str, nn.Parameter]]:
+    """Make the DP of a case. With ``mask_size > 1``, the DP has the legacy lower bound."""
     arrays = load(case)
-    dp = DirichletProcess(
+    mask_size = int(arrays["in.mask_size"])
+    cls = LegacyDirichletProcess if mask_size > 1 else DirichletProcess
+    dp = cls(
         sizes()["D"],
         sizes()["T"],
         tuple(arrays["in.alpha_prior_params"]),
-        int(arrays["in.mask_size"]),
+        mask_size,
         rng=np.random.default_rng(0),
     )
     parameters = dp_parameters(dp)
@@ -118,6 +122,7 @@ def make_mrd() -> tuple[MRD, dict[str, nn.Parameter]]:
 
 
 def make_dp_gp_lvm(case: str) -> tuple[DPGPLVM, dict[str, nn.Parameter]]:
+    """Make the DP-GP-LVM of a case. With ``mask_size > 1``, the DP has the legacy lower bound."""
     arrays = load(case)
     mask_size = int(arrays.get("in.mask_size", np.array(1)))
     expectation = "mixture" if case == "dp_gp_lvm_t" else "plug_in"
@@ -130,6 +135,8 @@ def make_dp_gp_lvm(case: str) -> tuple[DPGPLVM, dict[str, nn.Parameter]]:
         expectation=expectation,
         seed=0,
     )
+    if mask_size > 1:
+        use_legacy_dirichlet_process(model)
     parameters = dp_gp_lvm_parameters(model)
     assign(parameters, arrays)
     return model, parameters

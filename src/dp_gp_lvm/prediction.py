@@ -24,12 +24,13 @@ class NewDataBound:
     ----------
     lower_bound : torch.Tensor
         The lower bound of the training data and the test data together.
-    test_log_likelihood : torch.Tensor or None
-        The approximate log-likelihood of the test data. MRD does not supply it.
+    test_log_likelihood : torch.Tensor
+        The approximate log-likelihood ``log p(Y*|Y) ≈ F(q(X, X*)) - F(q(X))`` of the test data, from Damianou et al.
+        (2016), eq. (36). ``F(q(X, X*))`` is the lower bound above. ``F(q(X))`` is the lower bound of the training data.
     """
 
     lower_bound: torch.Tensor
-    test_log_likelihood: torch.Tensor | None
+    test_log_likelihood: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,8 @@ class MissingDataBound:
     mean : torch.Tensor
         The predictive mean of the unobserved dimensions, with the shape ``(N*, Du)``.
     covariance : torch.Tensor
-        The predictive covariance of each unobserved dimension, with the shape ``(Du, N*, N*)``.
+        The predictive covariance of each unobserved dimension, with the shape ``(Du, N*, N*)``. Each matrix is
+        diagonal. The diagonal holds the predictive variance of each test point.
     """
 
     lower_bound: torch.Tensor
@@ -62,7 +64,8 @@ class ViewsMissingDataBound:
     means : list of torch.Tensor
         The predictive mean of each unobserved view, each with the shape ``(N*, Dv)``.
     covariances : list of torch.Tensor
-        The predictive covariances of each unobserved view, each with the shape ``(Dv, N*, N*)``.
+        The predictive covariances of each unobserved view, each with the shape ``(Dv, N*, N*)``. Each matrix is
+        diagonal. The diagonal holds the predictive variance of each test point.
     """
 
     lower_bound: torch.Tensor

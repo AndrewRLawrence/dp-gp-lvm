@@ -97,11 +97,7 @@ def run_test_loglikelihood(run: Settings, store: ResultStore, frame_step: int, s
                 prediction = model.predict_new_latent_variables(
                     y_test, iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser
                 )
-                test_log_likelihood = prediction.bound.test_log_likelihood
-                if test_log_likelihood is None:  # pragma: no cover - DP-GP-LVM always supplies it.
-                    msg = "The model did not supply a test log-likelihood."
-                    raise RuntimeError(msg)
-                arrays[f"test_log_likelihood_{test_sequence}"] = test_log_likelihood.item()
+                arrays[f"test_log_likelihood_{test_sequence}"] = prediction.bound.test_log_likelihood.item()
                 arrays[f"x_test_mean_{test_sequence}"] = prediction.latent_mean.numpy()
             store.save(result, {"sequence": sequence, **vars(run), **trained.config()}, y_train=y_train, **arrays)
         saved = store.load(result)

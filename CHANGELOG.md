@@ -30,6 +30,38 @@ This file records the notable changes of each version. The format follows
   value has the same meaning as before.
 - The experiments print the seed of each training run, and the final objective of each restart.
 
+### Fixed
+
+These fixes follow the review in [docs/legacy-quirks.md](docs/legacy-quirks.md). The item numbers are the numbers in
+that document. The document also gives the measured effect of each fix on the experiments. `tests/legacy_reference.py`
+keeps the legacy formulas, and the parity tests compare them with the legacy golden values.
+
+- Item 1: the DP-GP-LVM predictive variance subtracts the trace term `tr[(K_uu⁻¹ − (K_uu + βΨ2)⁻¹) Ψ2*]`, as in the
+  BGP-LVM papers and the BGP-LVM and MRD code. Before, DP-GP-LVM added it. The fix makes the DP-GP-LVM predictive
+  variance smaller, so the missing-data log-likelihoods change.
+- Item 2: the predictive covariance uses the statistics ψ0\*, ψ1\*, and Ψ2\* of each test point, as in the formula
+  for one test point of the BGP-LVM papers. Each covariance matrix `(N*, N*)` is diagonal, with the predictive
+  variance of each test point. Before, the statistics were sums over all test points, so the variance grew with N\*,
+  and a constant term coupled all test points. The fix changes the predictive covariances of all models when N\* > 1,
+  so all missing-data log-likelihoods change.
+- Item 3: all models return the approximate test log-likelihood `F(q(X, X*)) − F(q(X))` of the BGP-LVM papers.
+  Before, the Bayesian GP-LVM returned `F̂* − F̂`, and MRD returned none. `NewDataBound.test_log_likelihood` is now
+  always a tensor. The value of DP-GP-LVM does not change. No experiment uses the value of the Bayesian GP-LVM or MRD.
+- Item 4: with `mask_size > 1`, the DP terms `E[log p(Z|V)]` and `H[q(Z)]` count each shared assignment once. They
+  use the `D / mask_size` free rows of Φ. Before, they counted each assignment `mask_size` times, so the DP prior and
+  the entropy were too strong. The fix changes the training objective when `mask_size > 1`, for example in
+  `experiments.cmu_swapped_legs`.
+- Item 5: the test bound is one collapsed bound on the training data augmented with the test data, as in the BGP-LVM,
+  MRD, and DP-GP-LVM papers. The statistics are `ψ0 + ψ0*`, `[Ψ1; Ψ1*]`, and `Ψ2 + Ψ2*`. For missing data, the
+  observed dimensions use this bound, and the unobserved dimensions keep their training terms (eq. (52) of the journal
+  paper). Before, the test data had a separate collapsed bound. The fix changes q(X*) in all models, so all
+  missing-data results and all test log-likelihoods change. The predictive formulas still use the training statistics.
+- Item 6: MRD predicts each unobserved view with the training term of that view. Before, every unobserved view used
+  the term of the last view. The fix has no effect when only the last view is unobserved, as in all the experiments.
+- Item 7: the DP-GP-LVM test bound has one trace term for each dimension, as in eq. (18) of the DP-GP-LVM
+  paper. Before, a `(D,)` minus `(D, 1)` broadcast made a `(D, D)` term. The fix changes q(X*), the missing-data
+  predictions, and the test log-likelihood of DP-GP-LVM.
+
 ## [1.0.0] - Unreleased
 
 This version ports the code from TensorFlow 1.15 to PyTorch. The maths stays the same. The git tag `legacy-tf1`
@@ -67,21 +99,5 @@ keeps the legacy version.
 
 ### Known issues
 
-The port copies these legacy behaviours, so the parity tests pass. Each one has a `NOTE(legacy)` comment in the code.
-[docs/legacy-quirks.md](docs/legacy-quirks.md) compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers and
-proposes a fix. A later version fixes them after review.
-
-1. The DP-GP-LVM predictive covariance adds the trace term `tr[(K_uu⁻¹ − (K_uu + βΨ2)⁻¹) Ψ2*]`. The BGP-LVM papers
-   subtract it, and so do the BGP-LVM and MRD code. Confidence that this is a bug: very high.
-2. The predictive covariance uses ψ0\* and Ψ2\* summed over all test points, and it adds one value for each dimension
-   to every entry of the N\* x N\* matrix. This follows the notation of the journal paper literally, but the formula is
-   for one test point. Confidence: medium-high.
-3. The test log-likelihood has two definitions. The Bayesian GP-LVM uses `F̂* − F̂`. DP-GP-LVM uses `F̂* − KL*`, which
-   agrees with the papers when the bound of item 5 is used. Confidence that the BGP-LVM version is a bug: high.
-4. With `mask_size > 1`, the DP terms count every row of Φ. Only `D / mask_size` rows are free. Confidence: medium-high.
-5. The test bound is a separate collapsed bound on the test data. All four papers use one collapsed bound on the
-   training data augmented with the test data. Confidence that this departs from the papers: high.
-6. For MRD missing data, every unobserved view uses the training term of the last view. Confidence: very high. It has
-   no effect when only the last view is unobserved.
-7. In the DP-GP-LVM test bound, a term with the shape `(D,)` minus a term with the shape `(D, 1)` broadcasts to
-   `(D, D)`. Confidence: very high.
+The port copies seven legacy behaviours, so the parity tests pass. [docs/legacy-quirks.md](docs/legacy-quirks.md)
+compares each one with the BGP-LVM, MRD, and DP-GP-LVM papers. "Fixed" under "Unreleased" gives the fixes.

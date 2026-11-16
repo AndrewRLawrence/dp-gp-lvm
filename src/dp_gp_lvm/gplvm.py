@@ -15,13 +15,12 @@ import torch
 from torch import nn
 
 from dp_gp_lvm._base import DEFAULT_INDUCING_POINTS, DEFAULT_LATENT_DIMS, LatentVariableModel, check_positive_int
-from dp_gp_lvm._bound import cholesky_a, predictive_operators, whiten
+from dp_gp_lvm._bound import collapsed_factors, predictive_variance
 from dp_gp_lvm._numerics import (
     DTYPE,
     ArrayInput,
     as_numpy,
     as_tensor,
-    batch_eye,
     inverse_softplus,
     positive,
     solve_lower,
@@ -47,26 +46,19 @@ _LOG_2PI = math.log(2.0 * math.pi)
 
 @dataclass(frozen=True)
 class _ViewState:
-    """The training quantities of one kernel that the predictions reuse."""
+    """The training quantities of one kernel that the test bounds and the predictions reuse."""
 
     kernel: ARDRBFKernel
     beta: torch.Tensor
     beta_b11: torch.Tensor
-    psi_1: torch.Tensor
-    l_uu: torch.Tensor
-    l_a: torch.Tensor
-    c: torch.Tensor
-    f_hat: torch.Tensor
-
-
-@dataclass(frozen=True)
-class _TestStats:
-    """The psi statistics of test data for one kernel, and ``L⁻¹ Ψ1*ᵀ``."""
-
     psi_0: torch.Tensor
     psi_1: torch.Tensor
     psi_2: torch.Tensor
-    l_uu_inv_psi_1_t: torch.Tensor
+    l_uu: torch.Tensor
+    whitened: torch.Tensor
+    l_a: torch.Tensor
+    c: torch.Tensor
+    f_hat: torch.Tensor
 
 
 def _kernel_parameters(num_latent_dims: int, dtype: torch.dtype, device: torch.device | str | None) -> nn.ParameterList:
@@ -80,81 +72,82 @@ def _kernel_parameters(num_latent_dims: int, dtype: torch.dtype, device: torch.d
     )
 
 
-def _view_state(
-    kernel: ARDRBFKernel, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
-) -> _ViewState:
-    """Return the training quantities and the free energy ``F̂`` of one kernel with batch size one."""
+def _free_energy(
+    beta: torch.Tensor, l_a: torch.Tensor, whitened: torch.Tensor, psi_0: torch.Tensor, c: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
+    """Return the free energy ``F̂`` of the columns of ``y``. All columns share one kernel with batch size one.
+
+    The rows of ``y`` are the latent points of the statistics. :func:`collapsed_factors` gives ``whitened``, ``l_a``,
+    and ``c``.
+    """
     num_samples, num_dims = y.shape
-    beta = kernel.noise_precision
-    beta_b11 = beta.unsqueeze(-1)
-    psi_0 = kernel.psi_0(x_u, mean, var)
-    psi_1 = kernel.psi_1(x_u, mean, var)
-    psi_2 = kernel.psi_2(x_u, mean, var)
-    l_uu = torch.linalg.cholesky(kernel.covariance_matrix(x_u, include_jitter=True))
-    whitened = whiten(l_uu, psi_2)
-    l_a = cholesky_a(beta_b11, whitened)
     log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
-    c = solve_lower(l_a, solve_lower(l_uu, transpose(psi_1)))
     c_t_c = (transpose(c) @ c).squeeze(0)
     yy_t = y @ y.T
-    f_hat = (
+    return (
         0.5 * num_samples * num_dims * (torch.log(beta).sum() - _LOG_2PI)
         - num_dims * log_det_l_a
         + 0.5 * num_dims * (beta * (batch_trace(whitened) - psi_0)).sum()
         + 0.5 * (beta**2 * torch.trace(c_t_c @ yy_t)).sum()
         - 0.5 * (beta * torch.trace(yy_t)).sum()
     )
-    return _ViewState(kernel, beta, beta_b11, psi_1, l_uu, l_a, c, f_hat)
 
 
-def _test_stats(state: _ViewState, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor) -> _TestStats:
-    """Return the psi statistics of the test data for one kernel."""
-    kernel = state.kernel
+def _view_state(
+    kernel: ARDRBFKernel, x_u: torch.Tensor, mean: torch.Tensor, var: torch.Tensor, y: torch.Tensor
+) -> _ViewState:
+    """Return the training quantities and the free energy ``F̂`` of one kernel with batch size one."""
+    beta = kernel.noise_precision
+    beta_b11 = beta.unsqueeze(-1)
+    psi_0 = kernel.psi_0(x_u, mean, var)
     psi_1 = kernel.psi_1(x_u, mean, var)
-    return _TestStats(
-        psi_0=kernel.psi_0(x_u, mean, var),
-        psi_1=psi_1,
-        psi_2=kernel.psi_2(x_u, mean, var),
-        l_uu_inv_psi_1_t=solve_lower(state.l_uu, transpose(psi_1)),
-    )
+    psi_2 = kernel.psi_2(x_u, mean, var)
+    l_uu = torch.linalg.cholesky(kernel.covariance_matrix(x_u, include_jitter=True))
+    whitened, l_a, c = collapsed_factors(beta_b11, l_uu, psi_1, psi_2)
+    f_hat = _free_energy(beta, l_a, whitened, psi_0, c, y)
+    return _ViewState(kernel, beta, beta_b11, psi_0, psi_1, psi_2, l_uu, whitened, l_a, c, f_hat)
 
 
-def _test_free_energy(state: _ViewState, stats: _TestStats, y: torch.Tensor) -> torch.Tensor:
-    """Return the free energy ``F̂*`` of the test data for one kernel with batch size one."""
-    num_test, num_dims = y.shape
-    beta = state.beta
-    whitened = whiten(state.l_uu, stats.psi_2)
-    l_a = cholesky_a(state.beta_b11, whitened)
-    log_det_l_a = torch.log(torch.diagonal(l_a, dim1=-2, dim2=-1)).sum()
-    c = solve_lower(l_a, stats.l_uu_inv_psi_1_t)
-    c_t_c = (transpose(c) @ c).squeeze(0)
-    yy_t = y @ y.T
-    return (
-        0.5 * num_test * num_dims * (torch.log(beta).sum() - _LOG_2PI)
-        - num_dims * log_det_l_a
-        + 0.5 * num_dims * (beta * (batch_trace(whitened) - stats.psi_0)).sum()
-        + 0.5 * (beta**2 * torch.trace(c_t_c @ yy_t)).sum()
-        - 0.5 * (beta * torch.trace(yy_t)).sum()
-    )
+def _augmented_free_energy(
+    state: _ViewState,
+    x_u: torch.Tensor,
+    test_mean: torch.Tensor,
+    test_variance: torch.Tensor,
+    y_train: torch.Tensor,
+    y_test: torch.Tensor,
+) -> torch.Tensor:
+    """Return the free energy ``F̂`` of the training data augmented with the test data, for one kernel.
+
+    The bound has the same form as the training bound (Damianou et al. 2016, section 4.1). The statistics of the
+    augmented data are the sums of the training statistics and the test statistics.
+    """
+    kernel = state.kernel
+    psi_0 = state.psi_0 + kernel.psi_0(x_u, test_mean, test_variance)
+    psi_1 = torch.cat([state.psi_1, kernel.psi_1(x_u, test_mean, test_variance)], dim=1)
+    psi_2 = state.psi_2 + kernel.psi_2(x_u, test_mean, test_variance)
+    whitened, l_a, c = collapsed_factors(state.beta_b11, state.l_uu, psi_1, psi_2)
+    return _free_energy(state.beta, l_a, whitened, psi_0, c, torch.cat([y_train, y_test]))
 
 
 def _predict_view(
-    state: _ViewState, terms: _TestStats, c_train: torch.Tensor, y_unobserved: torch.Tensor
+    state: _ViewState,
+    x_u: torch.Tensor,
+    test_mean: torch.Tensor,
+    test_variance: torch.Tensor,
+    y_unobserved: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one."""
-    beta = state.beta
-    num_test = terms.psi_1.shape[1]
-    c_predict = solve_lower(state.l_a, terms.l_uu_inv_psi_1_t)
-    mean = beta * ((transpose(c_predict) @ c_train).squeeze(0) @ y_unobserved)
-    posterior, difference = predictive_operators(state.l_uu, state.l_a)
-    g = terms.psi_2 - transpose(terms.psi_1) @ terms.psi_1
-    scale_du = posterior @ transpose(state.psi_1)
-    scale_du_yu = scale_du.squeeze(0) @ y_unobserved
-    yu_variance = beta.squeeze(0) ** 2 * torch.diagonal(transpose(scale_du_yu) @ (g.squeeze(0) @ scale_du_yu))
-    trace_term = batch_trace(difference @ terms.psi_2)
-    eye = batch_eye(num_test, 1, beta)
-    covariance = yu_variance[:, None, None] + (terms.psi_0 + torch.reciprocal(beta) - trace_term) * eye
-    return mean, covariance
+    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one.
+
+    The prediction uses the training statistics, as in Damianou et al. (2016), appendix D.2. Each covariance matrix
+    is diagonal. The diagonal holds the predictive variance of each test point.
+    """
+    psi_1 = state.kernel.psi_1(x_u, test_mean, test_variance)
+    c_predict = solve_lower(state.l_a, solve_lower(state.l_uu, transpose(psi_1)))
+    mean = state.beta * ((transpose(c_predict) @ state.c).squeeze(0) @ y_unobserved)
+    variance = predictive_variance(
+        state.kernel, state.l_uu, state.l_a, state.psi_1, y_unobserved.unsqueeze(0), x_u, test_mean, test_variance
+    )
+    return mean, torch.diag_embed(variance.squeeze(1).T)
 
 
 class BayesianGPLVM(LatentVariableModel):
@@ -288,12 +281,9 @@ class BayesianGPLVM(LatentVariableModel):
         y = self._tensor(y_test)
         state = self._state()
         kl = self.kl_divergence()
-        stats = _test_stats(state, self.x_u, test_mean, test_variance)
-        f_hat_test = _test_free_energy(state, stats, y)
-        kl_test = kl_standard_normal(test_mean, test_variance)
-        lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        # NOTE(legacy): DP-GP-LVM uses f̂* - KL* here. See CHANGELOG.md, known issue 3.
-        return NewDataBound(lower_bound, f_hat_test - state.f_hat)
+        f_hat_joint = _augmented_free_energy(state, self.x_u, test_mean, test_variance, self.y_train, y)
+        lower_bound = f_hat_joint - kl - kl_standard_normal(test_mean, test_variance)
+        return NewDataBound(lower_bound, lower_bound - (state.f_hat - kl))
 
     def missing_data_bound(
         self, y_observed: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor
@@ -315,18 +305,28 @@ class BayesianGPLVM(LatentVariableModel):
             The joint lower bound and the predictive distribution of the other ``D - Do`` dimensions.
         """
         y = self._tensor(y_observed)
+        state, lower_bound = self._missing_bound(y, test_mean, test_variance)
+        mean, covariance = _predict_view(state, self.x_u, test_mean, test_variance, self.y_train[:, y.shape[1] :])
+        return MissingDataBound(lower_bound, mean, covariance)
+
+    def _missing_bound(
+        self, y: torch.Tensor, test_mean: torch.Tensor, test_variance: torch.Tensor
+    ) -> tuple[_ViewState, torch.Tensor]:
+        """Return the training state and the lower bound for partly observed test data.
+
+        The observed dimensions use one bound on the augmented data. The unobserved dimensions use their training
+        term (Damianou et al. 2016, eq. 52).
+        """
         num_observed = y.shape[1]
         if not 0 < num_observed < self.y_train.shape[1]:
             msg = "The number of observed test dimensions must be less than the number of training dimensions."
             raise ValueError(msg)
         state = self._state()
-        kl = self.kl_divergence()
-        stats = _test_stats(state, self.x_u, test_mean, test_variance)
-        f_hat_test = _test_free_energy(state, stats, y)
-        kl_test = kl_standard_normal(test_mean, test_variance)
-        lower_bound = state.f_hat + f_hat_test - kl - kl_test
-        mean, covariance = _predict_view(state, stats, state.c, self.y_train[:, num_observed:])
-        return MissingDataBound(lower_bound, mean, covariance)
+        y_observed, y_unobserved = self.y_train[:, :num_observed], self.y_train[:, num_observed:]
+        f_hat_joint = _augmented_free_energy(state, self.x_u, test_mean, test_variance, y_observed, y) + _free_energy(
+            state.beta, state.l_a, state.whitened, state.psi_0, state.c, y_unobserved
+        )
+        return state, f_hat_joint - self.kl_divergence() - kl_standard_normal(test_mean, test_variance)
 
     def predict_new_latent_variables(
         self,
@@ -403,7 +403,7 @@ class BayesianGPLVM(LatentVariableModel):
         y = self._tensor(y_observed)
         reference = self.y_train[:, : y.shape[1]]
         latents, history = self.fit_test_latents(
-            lambda m, v: self.missing_data_bound(y, m, v).lower_bound,
+            lambda m, v: self._missing_bound(y, m, v)[1],
             reference,
             y,
             iterations=iterations,
@@ -573,18 +573,18 @@ class MRD(LatentVariableModel):
 
     def _test_bound(
         self, views: list[torch.Tensor], test_mean: torch.Tensor, test_variance: torch.Tensor
-    ) -> tuple[list[_ViewState], list[_TestStats], torch.Tensor]:
+    ) -> tuple[list[_ViewState], torch.Tensor]:
+        """Return the training states and the lower bound of the training views augmented with the test views.
+
+        Each test view augments its training view. A view without test data uses its training term (Damianou et al.
+        2016, eq. 52).
+        """
         states = self._states()
-        kl = self.kl_divergence()
-        f_hat = torch.stack([s.f_hat for s in states]).sum()
-        stats = [
-            _test_stats(state, x_u, test_mean, test_variance) for state, x_u in zip(states, self.x_us, strict=True)
-        ]
-        f_hat_test = torch.stack(
-            [_test_free_energy(state, stat, y) for state, stat, y in zip(states, stats, views, strict=False)]
-        ).sum()
-        kl_test = kl_standard_normal(test_mean, test_variance)
-        return states, stats, f_hat + f_hat_test - kl - kl_test
+        terms = [state.f_hat for state in states]
+        for v, y in enumerate(views):
+            terms[v] = _augmented_free_energy(states[v], self.x_us[v], test_mean, test_variance, self.views_train[v], y)
+        lower_bound = torch.stack(terms).sum() - self.kl_divergence() - kl_standard_normal(test_mean, test_variance)
+        return states, lower_bound
 
     def new_data_bound(
         self, views_test: Sequence[ArrayInput], test_mean: torch.Tensor, test_variance: torch.Tensor
@@ -603,11 +603,12 @@ class MRD(LatentVariableModel):
         Returns
         -------
         NewDataBound
-            The joint lower bound. MRD does not supply a test log-likelihood.
+            The joint lower bound and the approximate test log-likelihood.
         """
         views = self._check_views(views_test, partial=False)
-        _, _, lower_bound = self._test_bound(views, test_mean, test_variance)
-        return NewDataBound(lower_bound, None)
+        states, lower_bound = self._test_bound(views, test_mean, test_variance)
+        training_bound = torch.stack([s.f_hat for s in states]).sum() - self.kl_divergence()
+        return NewDataBound(lower_bound, lower_bound - training_bound)
 
     def missing_data_bound(
         self, views_observed: Sequence[ArrayInput], test_mean: torch.Tensor, test_variance: torch.Tensor
@@ -629,12 +630,10 @@ class MRD(LatentVariableModel):
             The joint lower bound and the predictive distribution of each unobserved view.
         """
         views = self._check_views(views_observed, partial=True)
-        states, stats, lower_bound = self._test_bound(views, test_mean, test_variance)
-        # NOTE(legacy): every unobserved view uses the training C of the last view. See CHANGELOG.md, known issue 6.
-        c_last = states[-1].c
+        states, lower_bound = self._test_bound(views, test_mean, test_variance)
         means, covariances = [], []
         for v in range(len(views), self.number_of_views):
-            mean, covariance = _predict_view(states[v], stats[v], c_last, self.views_train[v])
+            mean, covariance = _predict_view(states[v], self.x_us[v], test_mean, test_variance, self.views_train[v])
             means.append(mean)
             covariances.append(covariance)
         return ViewsMissingDataBound(lower_bound, means, covariances)
@@ -715,7 +714,7 @@ class MRD(LatentVariableModel):
         views = self._check_views(views_observed, partial=True)
         reference = torch.hstack(self.views_train[: len(views)])
         latents, history = self.fit_test_latents(
-            lambda m, v: self.missing_data_bound(views, m, v).lower_bound,
+            lambda m, v: self._test_bound(views, m, v)[1],
             reference,
             torch.hstack(views),
             iterations=iterations,
