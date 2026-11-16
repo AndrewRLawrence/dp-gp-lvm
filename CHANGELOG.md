@@ -21,6 +21,12 @@ This file records the notable changes of each version. The format follows
   `select` gives some entries of the batch.
 - `ElementaryKernel`: the base class for a kernel that is not a combination of other kernels. The class is a kernel
   family: `hyperparameter_shapes` gives the shape of each hyperparameter, and `build` makes a kernel from the values.
+- More kernels with ARD weights: `ARDMatern12Kernel`, `ARDMatern32Kernel`, `ARDMatern52Kernel`,
+  `ARDRationalQuadraticKernel`, `ARDPeriodicKernel`, and `ARDLinearKernel`. `StationaryKernel` is the base class for
+  a kernel that is a function of the scaled distance. In each kernel, an ARD weight of zero removes that input
+  dimension. These kernels have no psi statistics, so the models with the collapsed lower bound cannot use them.
+- `SumKernel` and `ProductKernel` combine kernels. `SumKernel.of(...)` and `ProductKernel.of(...)` give the kernel
+  family of a combination, for example `SumKernel.of(ARDRBFKernel, ARDLinearKernel)`.
 - `hyperprior_log_likelihood()` for `BayesianGPLVM` and `MRD`: the log density of the kernel hyperparameters and
   of the noise precision. `DPGPLVM` had this method before.
 

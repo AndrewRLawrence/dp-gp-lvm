@@ -9,7 +9,23 @@ from importlib.metadata import version
 from dp_gp_lvm.dirichlet_process import DirichletProcess
 from dp_gp_lvm.dp_gp_lvm import DPGPLVM
 from dp_gp_lvm.gplvm import MRD, BayesianGPLVM
-from dp_gp_lvm.kernels import ARDRBFKernel, ElementaryKernel, Kernel
+from dp_gp_lvm.kernels import (
+    ARDLinearKernel,
+    ARDMatern12Kernel,
+    ARDMatern32Kernel,
+    ARDMatern52Kernel,
+    ARDPeriodicKernel,
+    ARDRationalQuadraticKernel,
+    ARDRBFKernel,
+    CombinationKernel,
+    ElementaryKernel,
+    Kernel,
+    KernelCombination,
+    KernelFamily,
+    ProductKernel,
+    StationaryKernel,
+    SumKernel,
+)
 from dp_gp_lvm.prediction import (
     LatentPrediction,
     MissingDataBound,
@@ -25,16 +41,28 @@ __version__ = version("dp-gp-lvm")
 __all__ = [
     "DPGPLVM",
     "MRD",
+    "ARDLinearKernel",
+    "ARDMatern12Kernel",
+    "ARDMatern32Kernel",
+    "ARDMatern52Kernel",
+    "ARDPeriodicKernel",
     "ARDRBFKernel",
+    "ARDRationalQuadraticKernel",
     "BayesianGPLVM",
+    "CombinationKernel",
     "DirichletProcess",
     "ElementaryKernel",
     "Kernel",
+    "KernelCombination",
+    "KernelFamily",
     "LatentPrediction",
     "MissingDataBound",
     "MissingDataPrediction",
     "NewDataBound",
+    "ProductKernel",
     "Restarts",
+    "StationaryKernel",
+    "SumKernel",
     "ViewsMissingDataBound",
     "__version__",
     "fit",

@@ -101,6 +101,9 @@ print(restarts.seed, restarts.objectives)  # The seed of that model, and the fin
 | `MRD` | Manifold Relevance Determination. Each known view has its own kernel. | Damianou et al. (2012) |
 | `DirichletProcess` | A truncated stick-breaking DP with a variational posterior. | Blei and Jordan (2005) |
 | `ARDRBFKernel` | An RBF kernel with ARD weights and its psi statistics. | Supplemental section C |
+| `ARDMatern12Kernel`, `ARDMatern32Kernel`, `ARDMatern52Kernel` | Matérn kernels with ARD weights. | Rasmussen and Williams (2006) |
+| `ARDRationalQuadraticKernel`, `ARDPeriodicKernel`, `ARDLinearKernel` | More kernels with ARD weights. | Rasmussen and Williams (2006) |
+| `SumKernel`, `ProductKernel` | The sum and the product of kernels. | - |
 | `fit` | The training loop. It does Adam steps, then L-BFGS steps. | - |
 | `fit_restarts` | Trains one model for each seed and keeps the model with the lowest final objective. | - |
 

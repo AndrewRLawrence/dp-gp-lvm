@@ -177,3 +177,34 @@ def augmented_bound(y_train, x_mean, x_var, y_test, test_mean, test_var, kernels
         else:
             total += free_energy(y_train[:, d : d + 1], x_mean, x_var, x_u, gamma, alpha, beta)
     return total
+
+
+def kernel_value(name, x, z, gamma, alpha=1.0, extra=1.0):
+    """One value of an ARD kernel. gamma is (Q,), alpha is the signal variance, extra is the third hyperparameter."""
+    difference = x - z
+    r2 = np.sum(gamma * difference**2)
+    r = np.sqrt(r2)
+    if name == "rbf":
+        return alpha * np.exp(-0.5 * r2)
+    if name == "matern12":
+        return alpha * np.exp(-r)
+    if name == "matern32":
+        return alpha * (1.0 + np.sqrt(3.0) * r) * np.exp(-np.sqrt(3.0) * r)
+    if name == "matern52":
+        return alpha * (1.0 + np.sqrt(5.0) * r + 5.0 * r2 / 3.0) * np.exp(-np.sqrt(5.0) * r)
+    if name == "rational_quadratic":
+        return alpha * (1.0 + r2 / (2.0 * extra)) ** (-extra)
+    if name == "periodic":
+        return alpha * np.exp(-2.0 * np.sum(gamma * np.sin(np.pi * difference / extra) ** 2))
+    if name == "linear":
+        return np.sum(gamma * x * z)
+    raise ValueError(name)
+
+
+def kernel_matrix(name, x0, x1, gamma, alpha=1.0, extra=1.0):
+    """The covariance matrix of an ARD kernel between two sets of inputs, with explicit loops."""
+    k = np.zeros((x0.shape[0], x1.shape[0]))
+    for i in range(x0.shape[0]):
+        for j in range(x1.shape[0]):
+            k[i, j] = kernel_value(name, x0[i], x1[j], gamma, alpha, extra)
+    return k
