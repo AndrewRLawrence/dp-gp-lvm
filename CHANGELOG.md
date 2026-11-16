@@ -25,6 +25,8 @@ This file records the notable changes of each version. The format follows
   `ARDRationalQuadraticKernel`, `ARDPeriodicKernel`, and `ARDLinearKernel`. `StationaryKernel` is the base class for
   a kernel that is a function of the scaled distance. In each kernel, an ARD weight of zero removes that input
   dimension. These kernels have no psi statistics, so the models with the collapsed lower bound cannot use them.
+- For a square covariance matrix, the stationary kernels compute each distance from the differences of the inputs.
+  The distance between equal inputs is then exactly zero, and the matrix is symmetric.
 - `SumKernel` and `ProductKernel` combine kernels. `SumKernel.of(...)` and `ProductKernel.of(...)` give the kernel
   family of a combination, for example `SumKernel.of(ARDRBFKernel, ARDLinearKernel)`.
 - `GPPrior`: a Gaussian process prior on the latent space for sequence data, as in Damianou et al. (2016), section
@@ -46,6 +48,17 @@ This file records the notable changes of each version. The format follows
   model optimises only the free parameters of the test points.
 - `LatentPrior`, `StandardNormalPrior`, and `JointLatents`. `kl_divergence()`, `joint_latents()`, and
   `test_marginals()` are methods of the base class of the models.
+- Likelihoods for data that is not Gaussian, in `dp_gp_lvm.likelihoods`. A likelihood gives `p(y | f)` for each
+  observed value and its function value. The SVI models use them.
+  - `GaussianLikelihood`: the noise of the paper, with closed forms.
+  - `StudentTLikelihood` and `LaplaceLikelihood`: noise with heavy tails, for data with outliers.
+  - `BernoulliLikelihood` for binary data, `PoissonLikelihood` for counts, and `BetaLikelihood` for proportions.
+  - `MixedLikelihood`: a different likelihood for each group of observed dimensions.
+  - Each likelihood gives the expected log density, the predictive mean and variance, and the log predictive
+    density for a Gaussian `q(f)`. The default is a Gauss-Hermite quadrature with 20 points. The Gaussian, Laplace,
+    and Poisson likelihoods have closed forms.
+  - A `NaN` in the observed data is a missing value. Its term is zero.
+- `gauss_hermite` in `dp_gp_lvm._numerics`: the nodes and the weights of the Gauss-Hermite quadrature.
 - `hyperprior_log_likelihood()` for `BayesianGPLVM` and `MRD`: the log density of the kernel hyperparameters and
   of the noise precision. `DPGPLVM` had this method before.
 

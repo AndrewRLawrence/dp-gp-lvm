@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import math
+
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -169,3 +172,39 @@ def transpose(matrices: torch.Tensor) -> torch.Tensor:
         The tensor with the last two dimensions swapped.
     """
     return matrices.transpose(-2, -1)
+
+
+@functools.lru_cache(maxsize=16)
+def _gauss_hermite_arrays(num_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the Gauss-Hermite nodes and weights for a standard normal weight function."""
+    nodes, weights = np.polynomial.hermite.hermgauss(num_points)
+    return math.sqrt(2.0) * nodes, weights / math.sqrt(math.pi)
+
+
+def gauss_hermite(
+    num_points: int, *, dtype: torch.dtype = DTYPE, device: torch.device | str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the nodes and the weights of the Gauss-Hermite quadrature for a standard normal variable.
+
+    The expectation of a function ``g`` of a standard normal variable is approximately ``Σ_k weights[k] g(nodes[k])``.
+    The rule is exact for a polynomial of degree ``2 * num_points - 1`` or less.
+
+    Parameters
+    ----------
+    num_points : int
+        The number of quadrature points.
+    dtype : torch.dtype, default torch.float64
+        The floating point type of the output.
+    device : torch.device or str, optional
+        The device of the output.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        The nodes and the weights, each with the shape ``(num_points,)``. The weights sum to one.
+    """
+    if num_points <= 0:
+        msg = f"The number of quadrature points must be positive. The value is {num_points}."
+        raise ValueError(msg)
+    nodes, weights = _gauss_hermite_arrays(num_points)
+    return torch.as_tensor(nodes, dtype=dtype, device=device), torch.as_tensor(weights, dtype=dtype, device=device)
