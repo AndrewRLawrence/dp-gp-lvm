@@ -335,7 +335,7 @@ class BayesianGPLVM(LatentVariableModel):
         iterations: int = 1000,
         learning_rate: float = 0.05,
         use_pca: bool = False,
-        optimiser: OptimiserName = "adam",
+        optimiser: OptimiserName = "adam-lbfgs",
     ) -> LatentPrediction:
         """Fit q(X*) for fully observed test data. The model parameters do not change.
 
@@ -344,13 +344,13 @@ class BayesianGPLVM(LatentVariableModel):
         y_test : array_like
             The test data, with the shape ``(N*, D)``.
         iterations : int, default 1000
-            The number of Adam steps.
+            The maximum number of optimiser steps.
         learning_rate : float, default 0.05
             The Adam learning rate.
         use_pca : bool, default False
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
-        optimiser : {"adam", "legacy"}, default "adam"
-            ``"legacy"`` copies the numerics of TensorFlow 1.15.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
 
         Returns
         -------
@@ -378,7 +378,7 @@ class BayesianGPLVM(LatentVariableModel):
         iterations: int = 1000,
         learning_rate: float = 0.05,
         use_pca: bool = False,
-        optimiser: OptimiserName = "adam",
+        optimiser: OptimiserName = "adam-lbfgs",
     ) -> MissingDataPrediction[MissingDataBound]:
         """Fit q(X*) for partly observed test data, and predict the unobserved dimensions.
 
@@ -387,13 +387,13 @@ class BayesianGPLVM(LatentVariableModel):
         y_observed : array_like
             The observed test dimensions, with the shape ``(N*, Do)``. They must be the first ``Do`` dimensions.
         iterations : int, default 1000
-            The number of Adam steps.
+            The maximum number of optimiser steps.
         learning_rate : float, default 0.05
             The Adam learning rate.
         use_pca : bool, default False
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
-        optimiser : {"adam", "legacy"}, default "adam"
-            ``"legacy"`` copies the numerics of TensorFlow 1.15.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
 
         Returns
         -------
@@ -645,7 +645,7 @@ class MRD(LatentVariableModel):
         iterations: int = 1000,
         learning_rate: float = 0.05,
         use_pca: bool = False,
-        optimiser: OptimiserName = "adam",
+        optimiser: OptimiserName = "adam-lbfgs",
     ) -> LatentPrediction:
         """Fit q(X*) for fully observed test views. The model parameters do not change.
 
@@ -654,13 +654,13 @@ class MRD(LatentVariableModel):
         views_test : sequence of array_like
             One test array for each view, each with the shape ``(N*, Dv)``.
         iterations : int, default 1000
-            The number of Adam steps.
+            The maximum number of optimiser steps.
         learning_rate : float, default 0.05
             The Adam learning rate.
         use_pca : bool, default False
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
-        optimiser : {"adam", "legacy"}, default "adam"
-            ``"legacy"`` copies the numerics of TensorFlow 1.15.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
 
         Returns
         -------
@@ -689,7 +689,7 @@ class MRD(LatentVariableModel):
         iterations: int = 1000,
         learning_rate: float = 0.05,
         use_pca: bool = False,
-        optimiser: OptimiserName = "adam",
+        optimiser: OptimiserName = "adam-lbfgs",
     ) -> MissingDataPrediction[ViewsMissingDataBound]:
         """Fit q(X*) for the observed test views, and predict the other views.
 
@@ -698,13 +698,13 @@ class MRD(LatentVariableModel):
         views_observed : sequence of array_like
             The test arrays of the first ``Vo`` views, each with the shape ``(N*, Dv)``.
         iterations : int, default 1000
-            The number of Adam steps.
+            The maximum number of optimiser steps.
         learning_rate : float, default 0.05
             The Adam learning rate.
         use_pca : bool, default False
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
-        optimiser : {"adam", "legacy"}, default "adam"
-            ``"legacy"`` copies the numerics of TensorFlow 1.15.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
 
         Returns
         -------

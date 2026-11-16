@@ -25,7 +25,7 @@ def models(y: np.ndarray) -> list[BayesianGPLVM | DPGPLVM]:
 
 
 @pytest.mark.parametrize("index", [0, 1])
-@pytest.mark.parametrize("optimiser", ["adam", "legacy"])
+@pytest.mark.parametrize("optimiser", ["adam-lbfgs", "adam", "legacy"])
 def test_predict_missing_data(data: tuple[np.ndarray, np.ndarray], index: int, optimiser: OptimiserName) -> None:
     y_train, y_test = data
     model = models(y_train)[index]
@@ -35,7 +35,8 @@ def test_predict_missing_data(data: tuple[np.ndarray, np.ndarray], index: int, o
     assert result.latent_mean.shape == result.latent_variance.shape == (N_TEST, Q)
     assert result.bound.mean.shape == (N_TEST, D - D_OBS)
     assert result.bound.covariance.shape == (D - D_OBS, N_TEST, N_TEST)
-    assert len(result.history) == 15
+    # L-BFGS can stop early. The Adam optimisers do all steps.
+    assert 0 < len(result.history) <= 15 if optimiser == "adam-lbfgs" else len(result.history) == 15
     assert result.history[-1] > result.history[0]
     # Prediction must not change the model.
     for key, value in model.state_dict().items():

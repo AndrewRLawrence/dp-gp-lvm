@@ -214,10 +214,10 @@ PR #6 has one commit for each of these steps, in this order.
   as mean ± standard error over the seeds. For the synthetic data, each seed contributes the sum over the six
   (Ñ, D̃) settings. For oi-VAE, the metric is the test log-likelihood `F(q(X, X*)) − F(q(X))`, over the 9 training
   sequences.
-- **Numerics.** `torch.optim.Adam` (the default), float64, the CPU, and two threads for each process. All runs use the
-  memory-efficient `psi_1` and `psi_2` that PR #4 added to `kernels.py`. The baseline code (`e494060`) did not have
-  them, so the measurement script used them in their place. The values differ by about 1e-13 (relative). Without
-  them, `cmu_swapped_legs` needs 12 to 22 GB of memory.
+- **Numerics.** `torch.optim.Adam` (`optimiser="adam"`, the default at the time of these measurements), float64,
+  the CPU, and two threads for each process. All runs use the memory-efficient `psi_1` and `psi_2` that PR #4 added
+  to `kernels.py`. The baseline code (`e494060`) did not have them, so the measurement script used them in their
+  place. The values differ by about 1e-13 (relative). Without them, `cmu_swapped_legs` needs 12 to 22 GB of memory.
 - **The current `main`.** After PR #4 and PR #5, the experiment commands give exactly the same values as these
   measurements, with the default `--restarts 1`. A 30-step check shows this. So the measurements need no rerun.
 

@@ -71,7 +71,7 @@ def fit_restarts[M: Trainable](
     iterations: int,
     learning_rate: float = 0.05,
     *,
-    optimiser: OptimiserName = "adam",
+    optimiser: OptimiserName = "adam-lbfgs",
     callback: Callable[[int, int, float], None] | None = None,
 ) -> Restarts[M]:
     """Train one model for each seed with :func:`~dp_gp_lvm.fit`. Keep the model with the lowest final objective.
@@ -88,10 +88,10 @@ def fit_restarts[M: Trainable](
     seeds : iterable of int
         The seeds, one for each restart. The seeds must be different.
     iterations : int
-        The number of optimiser steps of each restart.
+        The maximum number of optimiser steps of each restart.
     learning_rate : float, default 0.05
         The Adam learning rate.
-    optimiser : {"adam", "legacy"}, default "adam"
+    optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
         The optimiser. See :func:`~dp_gp_lvm.fit`.
     callback : callable, optional
         A function that the loop calls after each step with the seed, the step index, and the objective before the

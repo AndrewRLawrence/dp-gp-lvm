@@ -199,7 +199,7 @@ def test_training_trajectory_with_legacy_adam(case: str) -> None:
 def test_training_trajectory_with_torch_adam(case: str) -> None:
     expected = load(case)["train.adam.objectives"]
     model, _ = make_model(case)
-    history = fit(model, iterations=len(expected) - 1, learning_rate=meta()["learning_rate"])
+    history = fit(model, iterations=len(expected) - 1, learning_rate=meta()["learning_rate"], optimiser="adam")
     close(np.array(history), expected[:-1], rtol=TORCH_ADAM_RTOL)
     close(model.objective(), expected[-1], rtol=TORCH_ADAM_RTOL)
 

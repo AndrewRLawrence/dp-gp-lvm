@@ -134,7 +134,7 @@ class LatentVariableModel(nn.Module):
         iterations: int,
         learning_rate: float,
         use_pca: bool,
-        optimiser: OptimiserName = "adam",
+        optimiser: OptimiserName = "adam-lbfgs",
     ) -> tuple[TestLatents, list[float]]:
         """Initialise q(X*) and maximise a lower bound with respect to it. The model parameters do not change.
 
@@ -147,13 +147,13 @@ class LatentVariableModel(nn.Module):
         y_test : torch.Tensor
             The observed test data.
         iterations : int
-            The number of Adam steps.
+            The maximum number of optimiser steps.
         learning_rate : float
             The Adam learning rate.
         use_pca : bool
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
-        optimiser : {"adam", "legacy"}, default "adam"
-            ``"legacy"`` copies the numerics of TensorFlow 1.15.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
 
         Returns
         -------
