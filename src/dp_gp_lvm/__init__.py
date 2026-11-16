@@ -26,11 +26,14 @@ from dp_gp_lvm.kernels import (
     StationaryKernel,
     SumKernel,
 )
+from dp_gp_lvm.latent_priors import GPPrior, JointLatents, LatentPrior, StandardNormalPrior
 from dp_gp_lvm.prediction import (
+    InputPrediction,
     LatentPrediction,
     MissingDataBound,
     MissingDataPrediction,
     NewDataBound,
+    ViewsInputPrediction,
     ViewsMissingDataBound,
 )
 from dp_gp_lvm.restarts import Restarts, fit_restarts
@@ -52,17 +55,23 @@ __all__ = [
     "CombinationKernel",
     "DirichletProcess",
     "ElementaryKernel",
+    "GPPrior",
+    "InputPrediction",
+    "JointLatents",
     "Kernel",
     "KernelCombination",
     "KernelFamily",
     "LatentPrediction",
+    "LatentPrior",
     "MissingDataBound",
     "MissingDataPrediction",
     "NewDataBound",
     "ProductKernel",
     "Restarts",
+    "StandardNormalPrior",
     "StationaryKernel",
     "SumKernel",
+    "ViewsInputPrediction",
     "ViewsMissingDataBound",
     "__version__",
     "fit",

@@ -27,14 +27,17 @@ from dp_gp_lvm._numerics import (
     transpose,
 )
 from dp_gp_lvm._numerics import trace as batch_trace
-from dp_gp_lvm.distributions import kl_standard_normal, log_normal_log_pdf
+from dp_gp_lvm.distributions import log_normal_log_pdf
 from dp_gp_lvm.kernels import ARDRBFKernel
+from dp_gp_lvm.latent_priors import JointLatents, LatentPrior
 from dp_gp_lvm.optim import OptimiserName
 from dp_gp_lvm.prediction import (
+    InputPrediction,
     LatentPrediction,
     MissingDataBound,
     MissingDataPrediction,
     NewDataBound,
+    ViewsInputPrediction,
     ViewsMissingDataBound,
 )
 
@@ -131,17 +134,16 @@ def _augmented_free_energy(
     return _free_energy(state.beta, l_a, whitened, psi_0, c, torch.cat([y_train, y_test]))
 
 
-def _predict_view(
+def _view_moments(
     state: _ViewState,
     x_u: torch.Tensor,
     test_mean: torch.Tensor,
     test_variance: torch.Tensor,
     y_unobserved: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one.
+    """Return the predictive mean and variance, each ``(N*, Du)``, of one kernel with batch size one.
 
-    The prediction uses the training statistics, as in Damianou et al. (2016), appendix D.2. Each covariance matrix
-    is diagonal. The diagonal holds the predictive variance of each test point.
+    The prediction uses the training statistics, as in Damianou et al. (2016), appendix D.2.
     """
     psi_1 = state.kernel.psi_1(x_u, test_mean, test_variance)
     c_predict = solve_lower(state.l_a, solve_lower(state.l_uu, transpose(psi_1)))
@@ -157,7 +159,22 @@ def _predict_view(
         test_mean,
         test_variance,
     )
-    return mean, torch.diag_embed(variance.squeeze(1).T)
+    return mean, variance.squeeze(1)
+
+
+def _predict_view(
+    state: _ViewState,
+    x_u: torch.Tensor,
+    test_mean: torch.Tensor,
+    test_variance: torch.Tensor,
+    y_unobserved: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the predictive mean ``(N*, Du)`` and covariance ``(Du, N*, N*)`` of one kernel with batch size one.
+
+    Each covariance matrix is diagonal. The diagonal holds the predictive variance of each test point.
+    """
+    mean, variance = _view_moments(state, x_u, test_mean, test_variance, y_unobserved)
+    return mean, torch.diag_embed(variance.T)
 
 
 class BayesianGPLVM(LatentVariableModel):
@@ -173,6 +190,9 @@ class BayesianGPLVM(LatentVariableModel):
         The number of latent dimensions ``Q``. It must be less than ``D``.
     num_inducing_points : int, default 25
         The number of inducing points ``M``. It must be less than ``N``.
+    latent_prior : LatentPrior, optional
+        The prior on the latent space. The default is the standard normal prior. Use a
+        :class:`~dp_gp_lvm.GPPrior` for sequence data.
     seed : int, optional
         The seed of the random generator for the initial values.
     dtype : torch.dtype, default torch.float64
@@ -192,6 +212,7 @@ class BayesianGPLVM(LatentVariableModel):
         num_latent_dims: int = DEFAULT_LATENT_DIMS,
         num_inducing_points: int = DEFAULT_INDUCING_POINTS,
         *,
+        latent_prior: LatentPrior | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
@@ -207,7 +228,15 @@ class BayesianGPLVM(LatentVariableModel):
             msg = "The number of inducing points must be less than the number of observations."
             raise ValueError(msg)
         rng = np.random.default_rng(seed)
-        super().__init__(y_np, num_latent_dims, self.initial_latent_variance, rng=rng, dtype=dtype, device=device)
+        super().__init__(
+            y_np,
+            num_latent_dims,
+            self.initial_latent_variance,
+            rng=rng,
+            latent_prior=latent_prior,
+            dtype=dtype,
+            device=device,
+        )
         self.register_buffer("y_train", self._tensor(y_np))
         self.kernel_raw = _kernel_parameters(num_latent_dims, dtype, device)
         self.x_u = nn.Parameter(self._tensor(self._inducing_init(num_inducing_points)))
@@ -237,10 +266,12 @@ class BayesianGPLVM(LatentVariableModel):
         """The inducing inputs, with the shape ``(M, Q)``."""
         return self.x_u
 
-    def _state(self) -> _ViewState:
-        return _view_state(
-            self.kernel, self.noise_precision, self.x_u, self.latent_mean, self.latent_variance, self.y_train
-        )
+    def _state(self, latents: JointLatents | None = None) -> _ViewState:
+        """Return the training quantities. A coupled ``latents`` gives the training marginals of q(X, X*)."""
+        coupled = latents is not None and latents.coupled
+        mean = latents.train_mean if latents is not None and coupled else self.latent_mean
+        variance = latents.train_variance if latents is not None and coupled else self.latent_variance
+        return _view_state(self.kernel, self.noise_precision, self.x_u, mean, variance, self.y_train)
 
     def hyperprior_log_likelihood(self) -> torch.Tensor:
         """Return the standard log-normal log density of the kernel hyperparameters and of the noise precision.
@@ -251,16 +282,6 @@ class BayesianGPLVM(LatentVariableModel):
             The log density as a scalar.
         """
         return self.kernel.prior_log_likelihood + log_normal_log_pdf(self.noise_precision).sum()
-
-    def kl_divergence(self) -> torch.Tensor:
-        """Return KL(q(X) || p(X)).
-
-        Returns
-        -------
-        torch.Tensor
-            The KL divergence as a scalar.
-        """
-        return kl_standard_normal(self.latent_mean, self.latent_variance)
 
     def elbo(self) -> torch.Tensor:
         """Return the evidence lower bound ``F̂ - KL``.
@@ -282,7 +303,15 @@ class BayesianGPLVM(LatentVariableModel):
         """
         return -(self.elbo() + self.hyperprior_log_likelihood())
 
-    def new_data_bound(self, y_test: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor) -> NewDataBound:
+    def new_data_bound(
+        self,
+        y_test: ArrayInput,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        *,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> NewDataBound:
         """Return the lower bound terms for fully observed test data at a given q(X*).
 
         Parameters
@@ -293,6 +322,12 @@ class BayesianGPLVM(LatentVariableModel):
             The means of q(X*), with the shape ``(N*, Q)``.
         test_variance : torch.Tensor
             The diagonal variances of q(X*), with the shape ``(N*, Q)``.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`. ``test_mean`` and ``test_variance`` are then the free
+            parameters of the test points, not the marginals of q(X*).
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -300,14 +335,32 @@ class BayesianGPLVM(LatentVariableModel):
             The joint lower bound and the approximate test log-likelihood.
         """
         y = self._tensor(y_test)
-        state = self._state()
-        kl = self.kl_divergence()
-        f_hat_joint = _augmented_free_energy(state, self.x_u, test_mean, test_variance, self.y_train, y)
-        lower_bound = f_hat_joint - kl - kl_standard_normal(test_mean, test_variance)
-        return NewDataBound(lower_bound, lower_bound - (state.f_hat - kl))
+        state, latents, lower_bound = self._new_bound(y, test_mean, test_variance, test_inputs, test_sequence_ids)
+        training = self._state() if latents.coupled else state
+        return NewDataBound(lower_bound, lower_bound - (training.f_hat - self.kl_divergence()))
+
+    def _new_bound(
+        self,
+        y: torch.Tensor,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> tuple[_ViewState, JointLatents, torch.Tensor]:
+        """Return the state, q(X, X*), and the lower bound of the training data augmented with the test data."""
+        latents = self.joint_latents(test_mean, test_variance, test_inputs, test_sequence_ids)
+        state = self._state(latents)
+        f_hat_joint = _augmented_free_energy(state, self.x_u, latents.test_mean, latents.test_variance, self.y_train, y)
+        return state, latents, f_hat_joint - latents.kl
 
     def missing_data_bound(
-        self, y_observed: ArrayInput, test_mean: torch.Tensor, test_variance: torch.Tensor
+        self,
+        y_observed: ArrayInput,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        *,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> MissingDataBound:
         """Return the lower bound and the predictive distribution for partly observed test data at a given q(X*).
 
@@ -319,6 +372,12 @@ class BayesianGPLVM(LatentVariableModel):
             The means of q(X*), with the shape ``(N*, Q)``.
         test_variance : torch.Tensor
             The diagonal variances of q(X*), with the shape ``(N*, Q)``.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`. ``test_mean`` and ``test_variance`` are then the free
+            parameters of the test points, not the marginals of q(X*).
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -326,14 +385,21 @@ class BayesianGPLVM(LatentVariableModel):
             The joint lower bound and the predictive distribution of the other ``D - Do`` dimensions.
         """
         y = self._tensor(y_observed)
-        state, lower_bound = self._missing_bound(y, test_mean, test_variance)
-        mean, covariance = _predict_view(state, self.x_u, test_mean, test_variance, self.y_train[:, y.shape[1] :])
+        state, latents, lower_bound = self._missing_bound(y, test_mean, test_variance, test_inputs, test_sequence_ids)
+        mean, covariance = _predict_view(
+            state, self.x_u, latents.test_mean, latents.test_variance, self.y_train[:, y.shape[1] :]
+        )
         return MissingDataBound(lower_bound, mean, covariance)
 
     def _missing_bound(
-        self, y: torch.Tensor, test_mean: torch.Tensor, test_variance: torch.Tensor
-    ) -> tuple[_ViewState, torch.Tensor]:
-        """Return the training state and the lower bound for partly observed test data.
+        self,
+        y: torch.Tensor,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> tuple[_ViewState, JointLatents, torch.Tensor]:
+        """Return the training state, q(X, X*), and the lower bound for partly observed test data.
 
         The observed dimensions use one bound on the augmented data. The unobserved dimensions use their training
         term (Damianou et al. 2016, eq. 52).
@@ -342,12 +408,13 @@ class BayesianGPLVM(LatentVariableModel):
         if not 0 < num_observed < self.y_train.shape[1]:
             msg = "The number of observed test dimensions must be less than the number of training dimensions."
             raise ValueError(msg)
-        state = self._state()
+        latents = self.joint_latents(test_mean, test_variance, test_inputs, test_sequence_ids)
+        state = self._state(latents)
         y_observed, y_unobserved = self.y_train[:, :num_observed], self.y_train[:, num_observed:]
-        f_hat_joint = _augmented_free_energy(state, self.x_u, test_mean, test_variance, y_observed, y) + _free_energy(
-            state.beta, state.l_a, state.whitened, state.psi_0, state.c, y_unobserved
-        )
-        return state, f_hat_joint - self.kl_divergence() - kl_standard_normal(test_mean, test_variance)
+        f_hat_joint = _augmented_free_energy(
+            state, self.x_u, latents.test_mean, latents.test_variance, y_observed, y
+        ) + _free_energy(state.beta, state.l_a, state.whitened, state.psi_0, state.c, y_unobserved)
+        return state, latents, f_hat_joint - latents.kl
 
     def predict_new_latent_variables(
         self,
@@ -357,6 +424,8 @@ class BayesianGPLVM(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam-lbfgs",
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> LatentPrediction:
         """Fit q(X*) for fully observed test data. The model parameters do not change.
 
@@ -372,6 +441,11 @@ class BayesianGPLVM(LatentVariableModel):
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
         optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
             The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -379,8 +453,9 @@ class BayesianGPLVM(LatentVariableModel):
             The optimised q(X*) and the lower bound terms.
         """
         y = self._tensor(y_test)
+        inputs = {"test_inputs": test_inputs, "test_sequence_ids": test_sequence_ids}
         latents, history = self.fit_test_latents(
-            lambda m, v: self.new_data_bound(y, m, v).lower_bound,
+            lambda m, v: self._new_bound(y, m, v, **inputs)[2],
             self.y_train,
             y,
             iterations=iterations,
@@ -389,8 +464,9 @@ class BayesianGPLVM(LatentVariableModel):
             optimiser=optimiser,
         )
         with torch.no_grad():
-            bound = self.new_data_bound(y, latents.mean, latents.variance)
-        return LatentPrediction(latents.mean.detach(), latents.variance.detach(), bound, history)
+            bound = self.new_data_bound(y, latents.mean, latents.variance, **inputs)
+            mean, variance = self.test_marginals(latents, **inputs)
+        return LatentPrediction(mean, variance, bound, history)
 
     def predict_missing_data(
         self,
@@ -400,6 +476,8 @@ class BayesianGPLVM(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam-lbfgs",
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> MissingDataPrediction[MissingDataBound]:
         """Fit q(X*) for partly observed test data, and predict the unobserved dimensions.
 
@@ -415,6 +493,11 @@ class BayesianGPLVM(LatentVariableModel):
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
         optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
             The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -422,9 +505,10 @@ class BayesianGPLVM(LatentVariableModel):
             The optimised q(X*) and the predictive distribution of the unobserved dimensions.
         """
         y = self._tensor(y_observed)
+        inputs = {"test_inputs": test_inputs, "test_sequence_ids": test_sequence_ids}
         reference = self.y_train[:, : y.shape[1]]
         latents, history = self.fit_test_latents(
-            lambda m, v: self._missing_bound(y, m, v)[1],
+            lambda m, v: self._missing_bound(y, m, v, **inputs)[2],
             reference,
             y,
             iterations=iterations,
@@ -433,8 +517,34 @@ class BayesianGPLVM(LatentVariableModel):
             optimiser=optimiser,
         )
         with torch.no_grad():
-            bound = self.missing_data_bound(y, latents.mean, latents.variance)
-        return MissingDataPrediction(latents.mean.detach(), latents.variance.detach(), bound, history)
+            bound = self.missing_data_bound(y, latents.mean, latents.variance, **inputs)
+            mean, variance = self.test_marginals(latents, **inputs)
+        return MissingDataPrediction(mean, variance, bound, history)
+
+    def predict_from_inputs(
+        self, test_inputs: ArrayInput, *, test_sequence_ids: ArrayInput | None = None
+    ) -> InputPrediction:
+        """Predict the observed dimensions at new inputs of the GP prior, without test data.
+
+        The latent points come from the GP prediction at the test inputs (Damianou et al. 2016, section 4.2). Use
+        this method to interpolate or to forecast a sequence.
+
+        Parameters
+        ----------
+        test_inputs : array_like
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        InputPrediction
+            The marginals of q(X*) and the predictive mean and variance of each observed dimension.
+        """
+        with torch.no_grad():
+            latent_mean, latent_variance = self.predict_latents_from_inputs(test_inputs, test_sequence_ids)
+            mean, variance = _view_moments(self._state(), self.x_u, latent_mean, latent_variance, self.y_train)
+        return InputPrediction(latent_mean, latent_variance, mean, variance)
 
 
 class MRD(LatentVariableModel):
@@ -448,6 +558,9 @@ class MRD(LatentVariableModel):
         The number of latent dimensions ``Q``. It must be less than the total number of dimensions.
     num_inducing_points : int, default 25
         The number of inducing points ``M`` for each view. It must be less than ``N``.
+    latent_prior : LatentPrior, optional
+        The prior on the latent space. The default is the standard normal prior. Use a
+        :class:`~dp_gp_lvm.GPPrior` for sequence data.
     seed : int, optional
         The seed of the random generator for the initial values.
     dtype : torch.dtype, default torch.float64
@@ -465,6 +578,7 @@ class MRD(LatentVariableModel):
         num_latent_dims: int = DEFAULT_LATENT_DIMS,
         num_inducing_points: int = DEFAULT_INDUCING_POINTS,
         *,
+        latent_prior: LatentPrior | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
@@ -488,7 +602,13 @@ class MRD(LatentVariableModel):
             raise ValueError(msg)
         rng = np.random.default_rng(seed)
         super().__init__(
-            np.hstack(views), num_latent_dims, self.initial_latent_variance, rng=rng, dtype=dtype, device=device
+            np.hstack(views),
+            num_latent_dims,
+            self.initial_latent_variance,
+            rng=rng,
+            latent_prior=latent_prior,
+            dtype=dtype,
+            device=device,
         )
         self.view_dims = [v.shape[1] for v in views]
         for index, view in enumerate(views):
@@ -537,8 +657,11 @@ class MRD(LatentVariableModel):
         """The inducing inputs of each view, each with the shape ``(M, Q)``."""
         return list(self.x_us)
 
-    def _states(self) -> list[_ViewState]:
-        mean, var = self.latent_mean, self.latent_variance
+    def _states(self, latents: JointLatents | None = None) -> list[_ViewState]:
+        """Return the training quantities of each view. A coupled ``latents`` gives the training marginals."""
+        coupled = latents is not None and latents.coupled
+        mean = latents.train_mean if latents is not None and coupled else self.latent_mean
+        var = latents.train_variance if latents is not None and coupled else self.latent_variance
         return [
             _view_state(kernel, beta, x_u, mean, var, y)
             for kernel, beta, x_u, y in zip(
@@ -557,16 +680,6 @@ class MRD(LatentVariableModel):
         kernels = [k.prior_log_likelihood for k in self.kernels]
         noises = [log_normal_log_pdf(beta).sum() for beta in self.noise_precision]
         return torch.stack(kernels + noises).sum()
-
-    def kl_divergence(self) -> torch.Tensor:
-        """Return KL(q(X) || p(X)).
-
-        Returns
-        -------
-        torch.Tensor
-            The KL divergence as a scalar.
-        """
-        return kl_standard_normal(self.latent_mean, self.latent_variance)
 
     def elbo(self) -> torch.Tensor:
         """Return the evidence lower bound: the sum of ``F̂`` over the views, minus the KL divergence.
@@ -606,22 +719,35 @@ class MRD(LatentVariableModel):
         return views
 
     def _test_bound(
-        self, views: list[torch.Tensor], test_mean: torch.Tensor, test_variance: torch.Tensor
-    ) -> tuple[list[_ViewState], torch.Tensor]:
-        """Return the training states and the lower bound of the training views augmented with the test views.
+        self,
+        views: list[torch.Tensor],
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> tuple[list[_ViewState], JointLatents, torch.Tensor]:
+        """Return the states, q(X, X*), and the lower bound of the training views augmented with the test views.
 
         Each test view augments its training view. A view without test data uses its training term (Damianou et al.
         2016, eq. 52).
         """
-        states = self._states()
+        latents = self.joint_latents(test_mean, test_variance, test_inputs, test_sequence_ids)
+        states = self._states(latents)
         terms = [state.f_hat for state in states]
         for v, y in enumerate(views):
-            terms[v] = _augmented_free_energy(states[v], self.x_us[v], test_mean, test_variance, self.views_train[v], y)
-        lower_bound = torch.stack(terms).sum() - self.kl_divergence() - kl_standard_normal(test_mean, test_variance)
-        return states, lower_bound
+            terms[v] = _augmented_free_energy(
+                states[v], self.x_us[v], latents.test_mean, latents.test_variance, self.views_train[v], y
+            )
+        return states, latents, torch.stack(terms).sum() - latents.kl
 
     def new_data_bound(
-        self, views_test: Sequence[ArrayInput], test_mean: torch.Tensor, test_variance: torch.Tensor
+        self,
+        views_test: Sequence[ArrayInput],
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        *,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> NewDataBound:
         """Return the lower bound for fully observed test views at a given q(X*).
 
@@ -633,6 +759,12 @@ class MRD(LatentVariableModel):
             The means of q(X*), with the shape ``(N*, Q)``.
         test_variance : torch.Tensor
             The diagonal variances of q(X*), with the shape ``(N*, Q)``.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`. ``test_mean`` and ``test_variance`` are then the free
+            parameters of the test points, not the marginals of q(X*).
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -640,12 +772,19 @@ class MRD(LatentVariableModel):
             The joint lower bound and the approximate test log-likelihood.
         """
         views = self._check_views(views_test, partial=False)
-        states, lower_bound = self._test_bound(views, test_mean, test_variance)
-        training_bound = torch.stack([s.f_hat for s in states]).sum() - self.kl_divergence()
+        states, latents, lower_bound = self._test_bound(views, test_mean, test_variance, test_inputs, test_sequence_ids)
+        training = self._states() if latents.coupled else states
+        training_bound = torch.stack([s.f_hat for s in training]).sum() - self.kl_divergence()
         return NewDataBound(lower_bound, lower_bound - training_bound)
 
     def missing_data_bound(
-        self, views_observed: Sequence[ArrayInput], test_mean: torch.Tensor, test_variance: torch.Tensor
+        self,
+        views_observed: Sequence[ArrayInput],
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        *,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> ViewsMissingDataBound:
         """Return the lower bound and the predictive distribution of the unobserved views at a given q(X*).
 
@@ -657,6 +796,12 @@ class MRD(LatentVariableModel):
             The means of q(X*), with the shape ``(N*, Q)``.
         test_variance : torch.Tensor
             The diagonal variances of q(X*), with the shape ``(N*, Q)``.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`. ``test_mean`` and ``test_variance`` are then the free
+            parameters of the test points, not the marginals of q(X*).
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -664,10 +809,12 @@ class MRD(LatentVariableModel):
             The joint lower bound and the predictive distribution of each unobserved view.
         """
         views = self._check_views(views_observed, partial=True)
-        states, lower_bound = self._test_bound(views, test_mean, test_variance)
+        states, latents, lower_bound = self._test_bound(views, test_mean, test_variance, test_inputs, test_sequence_ids)
         means, covariances = [], []
         for v in range(len(views), self.number_of_views):
-            mean, covariance = _predict_view(states[v], self.x_us[v], test_mean, test_variance, self.views_train[v])
+            mean, covariance = _predict_view(
+                states[v], self.x_us[v], latents.test_mean, latents.test_variance, self.views_train[v]
+            )
             means.append(mean)
             covariances.append(covariance)
         return ViewsMissingDataBound(lower_bound, means, covariances)
@@ -680,6 +827,8 @@ class MRD(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam-lbfgs",
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> LatentPrediction:
         """Fit q(X*) for fully observed test views. The model parameters do not change.
 
@@ -695,6 +844,11 @@ class MRD(LatentVariableModel):
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
         optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
             The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -702,9 +856,10 @@ class MRD(LatentVariableModel):
             The optimised q(X*) and the lower bound.
         """
         views = self._check_views(views_test, partial=False)
+        inputs = {"test_inputs": test_inputs, "test_sequence_ids": test_sequence_ids}
         reference = torch.hstack(self.views_train)
         latents, history = self.fit_test_latents(
-            lambda m, v: self.new_data_bound(views, m, v).lower_bound,
+            lambda m, v: self._test_bound(views, m, v, **inputs)[2],
             reference,
             torch.hstack(views),
             iterations=iterations,
@@ -713,8 +868,9 @@ class MRD(LatentVariableModel):
             optimiser=optimiser,
         )
         with torch.no_grad():
-            bound = self.new_data_bound(views, latents.mean, latents.variance)
-        return LatentPrediction(latents.mean.detach(), latents.variance.detach(), bound, history)
+            bound = self.new_data_bound(views, latents.mean, latents.variance, **inputs)
+            mean, variance = self.test_marginals(latents, **inputs)
+        return LatentPrediction(mean, variance, bound, history)
 
     def predict_missing_data(
         self,
@@ -724,6 +880,8 @@ class MRD(LatentVariableModel):
         learning_rate: float = 0.05,
         use_pca: bool = False,
         optimiser: OptimiserName = "adam-lbfgs",
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
     ) -> MissingDataPrediction[ViewsMissingDataBound]:
         """Fit q(X*) for the observed test views, and predict the other views.
 
@@ -739,6 +897,11 @@ class MRD(LatentVariableModel):
             If true, start q(X*) at the PCA of the test data. If false, start at the nearest training points.
         optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
             The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
 
         Returns
         -------
@@ -746,9 +909,10 @@ class MRD(LatentVariableModel):
             The optimised q(X*) and the predictive distribution of each unobserved view.
         """
         views = self._check_views(views_observed, partial=True)
+        inputs = {"test_inputs": test_inputs, "test_sequence_ids": test_sequence_ids}
         reference = torch.hstack(self.views_train[: len(views)])
         latents, history = self.fit_test_latents(
-            lambda m, v: self._test_bound(views, m, v)[1],
+            lambda m, v: self._test_bound(views, m, v, **inputs)[2],
             reference,
             torch.hstack(views),
             iterations=iterations,
@@ -757,5 +921,34 @@ class MRD(LatentVariableModel):
             optimiser=optimiser,
         )
         with torch.no_grad():
-            bound = self.missing_data_bound(views, latents.mean, latents.variance)
-        return MissingDataPrediction(latents.mean.detach(), latents.variance.detach(), bound, history)
+            bound = self.missing_data_bound(views, latents.mean, latents.variance, **inputs)
+            mean, variance = self.test_marginals(latents, **inputs)
+        return MissingDataPrediction(mean, variance, bound, history)
+
+    def predict_from_inputs(
+        self, test_inputs: ArrayInput, *, test_sequence_ids: ArrayInput | None = None
+    ) -> ViewsInputPrediction:
+        """Predict the observed dimensions at new inputs of the GP prior, without test data.
+
+        The latent points come from the GP prediction at the test inputs (Damianou et al. 2016, section 4.2). Use
+        this method to interpolate or to forecast a sequence.
+
+        Parameters
+        ----------
+        test_inputs : array_like
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        ViewsInputPrediction
+            The marginals of q(X*) and the predictive mean and variance of each observed dimension.
+        """
+        with torch.no_grad():
+            latent_mean, latent_variance = self.predict_latents_from_inputs(test_inputs, test_sequence_ids)
+            moments = [
+                _view_moments(state, x_u, latent_mean, latent_variance, y)
+                for state, x_u, y in zip(self._states(), self.x_us, self.views_train, strict=True)
+            ]
+        return ViewsInputPrediction(latent_mean, latent_variance, [m for m, _ in moments], [v for _, v in moments])

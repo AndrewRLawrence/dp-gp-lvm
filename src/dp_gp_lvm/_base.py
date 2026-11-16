@@ -1,4 +1,4 @@
-"""Shared parts of the latent variable models: q(X), validation, and test initialisation."""
+"""Shared parts of the latent variable models: q(X), the prior p(X), validation, and test initialisation."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from torch import nn
 
 from dp_gp_lvm._init import nearest_neighbour, pca_latent_init
 from dp_gp_lvm._numerics import DTYPE, ArrayInput, as_tensor, inverse_softplus, positive
+from dp_gp_lvm.latent_priors import JointLatents, LatentPrior, StandardNormalPrior
 from dp_gp_lvm.optim import OptimiserName
 from dp_gp_lvm.prediction import TestLatents, frozen, optimise_test_latents
 
@@ -39,7 +40,11 @@ def check_positive_int(name: str, value: int) -> None:
 
 
 class LatentVariableModel(nn.Module):
-    """The base class for models with a factorised Gaussian q(X) over ``N`` latent points.
+    """The base class for models with a Gaussian q(X) over ``N`` latent points.
+
+    The model keeps two free parameters for q(X), each with the shape ``(N, Q)``: ``x_mean`` and ``x_covar_raw``.
+    The prior maps them to the marginal means and variances of q(X). With the standard normal prior, they are the
+    means and the raw variances of a factorised q(X).
 
     Parameters
     ----------
@@ -51,6 +56,8 @@ class LatentVariableModel(nn.Module):
         The initial variance of each entry of q(X).
     rng : numpy.random.Generator
         The random generator for the initial values and for the test initialisation.
+    latent_prior : LatentPrior, optional
+        The prior p(X). The default is the standard normal prior.
     dtype : torch.dtype
         The floating point type of the parameters.
     device : torch.device or str, optional
@@ -64,6 +71,7 @@ class LatentVariableModel(nn.Module):
         initial_variance: float,
         *,
         rng: np.random.Generator,
+        latent_prior: LatentPrior | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
     ) -> None:
@@ -74,10 +82,12 @@ class LatentVariableModel(nn.Module):
         self._device = device
         self.x_init = pca_latent_init(y_train, num_latent_dims)
         num_samples = y_train.shape[0]
-        self.x_mean = nn.Parameter(self._tensor(self.x_init))
-        self.x_covar_raw = nn.Parameter(
-            self._tensor(inverse_softplus(initial_variance, (num_samples, num_latent_dims)))
-        )
+        self.latent_prior = StandardNormalPrior() if latent_prior is None else latent_prior
+        self.latent_prior.check_num_points(num_samples)
+        self.latent_prior.to(dtype=dtype, device=device)
+        self.x_mean = nn.Parameter(self.latent_prior.initial_free_mean(self._tensor(self.x_init)))
+        free_variance = self.latent_prior.initial_free_variance(initial_variance)
+        self.x_covar_raw = nn.Parameter(self._tensor(inverse_softplus(free_variance, (num_samples, num_latent_dims))))
 
     def _tensor(self, value: ArrayInput) -> torch.Tensor:
         """Convert a value to a tensor with the model type and device."""
@@ -91,18 +101,79 @@ class LatentVariableModel(nn.Module):
 
     @property
     def latent_mean(self) -> torch.Tensor:
-        """The means of q(X), with the shape ``(N, Q)``."""
-        return self.x_mean
+        """The marginal means of q(X), with the shape ``(N, Q)``."""
+        return self.latent_prior.mean(self.x_mean)
 
     @property
     def latent_variance(self) -> torch.Tensor:
-        """The diagonal variances of q(X), with the shape ``(N, Q)``."""
-        return positive(self.x_covar_raw)
+        """The marginal variances of q(X), with the shape ``(N, Q)``."""
+        return self.latent_prior.variance(positive(self.x_covar_raw))
+
+    def kl_divergence(self) -> torch.Tensor:
+        """Return KL(q(X) || p(X)).
+
+        Returns
+        -------
+        torch.Tensor
+            The KL divergence as a scalar.
+        """
+        return self.latent_prior.kl(self.x_mean, positive(self.x_covar_raw))
+
+    def joint_latents(
+        self,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> JointLatents:
+        """Return q(X, X*) of the training points and some test points.
+
+        Parameters
+        ----------
+        test_mean : torch.Tensor
+            The free means of the test points, with the shape ``(N*, Q)``. With the standard normal prior, they are
+            the means of q(X*).
+        test_variance : torch.Tensor
+            The positive free variances of the test points, with the shape ``(N*, Q)``. With the standard normal
+            prior, they are the variances of q(X*).
+        test_inputs : array_like, optional
+            The inputs of the test points. Give them only if the prior is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        JointLatents
+            The marginals of the training and the test points, and the KL divergence to the joint prior.
+        """
+        return self.latent_prior.joint(
+            self.x_mean, positive(self.x_covar_raw), test_mean, test_variance, test_inputs, test_sequence_ids
+        )
+
+    def predict_latents_from_inputs(
+        self, test_inputs: ArrayInput, test_sequence_ids: ArrayInput | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the marginals of q(X*) at new inputs of a GP prior, without test data.
+
+        Parameters
+        ----------
+        test_inputs : array_like
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The marginal means and variances of the test points, each with the shape ``(N*, Q)``.
+        """
+        return self.latent_prior.predict(self.x_mean, positive(self.x_covar_raw), test_inputs, test_sequence_ids)
 
     def initial_test_mean(self, y_reference: torch.Tensor, y_test: torch.Tensor, *, use_pca: bool) -> torch.Tensor:
-        """Return initial means for q(X*).
+        """Return initial free means for q(X*).
 
-        By default, each test row starts at the latent mean of its nearest training row, plus a little noise.
+        By default, each test row starts at the latent mean of its nearest training row, plus a little noise. With
+        a GP prior, the free means start at zero. The latent means are then the GP prediction at the test inputs.
 
         Parameters
         ----------
@@ -120,10 +191,13 @@ class LatentVariableModel(nn.Module):
         """
         y_test_np = y_test.detach().cpu().numpy()
         if use_pca:
-            return self._tensor(pca_latent_init(y_test_np, self.num_latent_dims))
+            return self.latent_prior.initial_test_free_mean(
+                self._tensor(pca_latent_init(y_test_np, self.num_latent_dims))
+            )
         indices = nearest_neighbour(y_reference.detach().cpu().numpy(), y_test_np)
         noise = self._rng.normal(scale=INIT_NOISE_SCALE, size=(y_test_np.shape[0], self.num_latent_dims))
-        return self.x_mean.detach()[torch.as_tensor(indices, device=self.x_mean.device)] + self._tensor(noise)
+        nearest = self.latent_mean.detach()[torch.as_tensor(indices, device=self.x_mean.device)]
+        return self.latent_prior.initial_test_free_mean(nearest + self._tensor(noise))
 
     def fit_test_latents(
         self,
@@ -166,6 +240,31 @@ class LatentVariableModel(nn.Module):
                 lower_bound, latents, iterations=iterations, learning_rate=learning_rate, optimiser=optimiser
             )
         return latents, history
+
+    def test_marginals(
+        self,
+        latents: TestLatents,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the marginal means and variances of q(X*) for the free parameters of the test points.
+
+        Parameters
+        ----------
+        latents : TestLatents
+            The free parameters of q(X*).
+        test_inputs : array_like, optional
+            The inputs of the test points. Give them only if the prior is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The marginal means and variances, each with the shape ``(N*, Q)``.
+        """
+        joint = self.joint_latents(latents.mean, latents.variance, test_inputs, test_sequence_ids)
+        return joint.test_mean.detach(), joint.test_variance.detach()
 
     def objective(self) -> torch.Tensor:
         """Return the training objective, which training minimises.

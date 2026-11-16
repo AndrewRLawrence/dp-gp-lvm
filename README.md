@@ -92,6 +92,27 @@ print(restarts.seed, restarts.objectives)  # The seed of that model, and the fin
 
 `fit_restarts` keeps only the best model so far. Thus, not more than two models use memory at the same time.
 
+### Sequence data
+
+For sequence data, put a Gaussian process (GP) prior on the latent space. Each latent dimension is then a smooth
+function of the time. Give the time of each row of the data:
+
+```python
+from dp_gp_lvm import ARDMatern32Kernel, GPPrior
+
+times = np.arange(y.shape[0])  # The time of each row of y.
+prior = GPPrior(times, ARDMatern32Kernel)
+model = DPGPLVM(y, num_latent_dims=10, num_inducing_points=25, truncation_level=8, latent_prior=prior, seed=0)
+fit(model, iterations=1500, learning_rate=0.05)
+
+forecast = model.predict_from_inputs(times[-1] + np.arange(1, 11))  # The next 10 time steps.
+mean, variance = forecast.mean, forecast.variance  # Each has the shape (10, D).
+```
+
+`predict_from_inputs` needs no test data. It interpolates or forecasts the sequence. To predict missing dimensions
+of test rows, give their times: `model.predict_missing_data(y_new[:, :Do], test_inputs=new_times)`. For more than
+one sequence, give `sequence_ids` to `GPPrior`. Sequences are then independent in the prior.
+
 ## Models
 
 | Name | Description | Reference |
@@ -104,6 +125,7 @@ print(restarts.seed, restarts.objectives)  # The seed of that model, and the fin
 | `ARDMatern12Kernel`, `ARDMatern32Kernel`, `ARDMatern52Kernel` | Matérn kernels with ARD weights. | Rasmussen and Williams (2006) |
 | `ARDRationalQuadraticKernel`, `ARDPeriodicKernel`, `ARDLinearKernel` | More kernels with ARD weights. | Rasmussen and Williams (2006) |
 | `SumKernel`, `ProductKernel` | The sum and the product of kernels. | - |
+| `GPPrior` | A GP prior on the latent space for sequence data. The default is `StandardNormalPrior`. | Damianou et al. (2016), section 3.3.2 |
 | `fit` | The training loop. It does Adam steps, then L-BFGS steps. | - |
 | `fit_restarts` | Trains one model for each seed and keeps the model with the lowest final objective. | - |
 
@@ -111,6 +133,7 @@ Each model has these prediction methods:
 
 - `predict_new_latent_variables(y_test)` fits q(X\*) for fully observed test data.
 - `predict_missing_data(y_observed)` fits q(X\*) for partly observed test data and predicts the other dimensions.
+- `predict_from_inputs(test_inputs)` predicts all dimensions at new inputs of a `GPPrior`, without test data.
 
 All models are `torch.nn.Module` objects. Use `state_dict()` and `load_state_dict()` to save and load them.
 

@@ -119,13 +119,60 @@ class MissingDataPrediction[BoundT: (MissingDataBound, ViewsMissingDataBound)]:
     history: list[float] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class InputPrediction:
+    """The prediction at new inputs of a GP prior on the latent space, without test data.
+
+    Attributes
+    ----------
+    latent_mean : torch.Tensor
+        The marginal means of q(X*), with the shape ``(N*, Q)``.
+    latent_variance : torch.Tensor
+        The marginal variances of q(X*), with the shape ``(N*, Q)``.
+    mean : torch.Tensor
+        The predictive mean of each observed dimension, with the shape ``(N*, D)``.
+    variance : torch.Tensor
+        The predictive variance of each observed dimension, with the shape ``(N*, D)``.
+    """
+
+    latent_mean: torch.Tensor
+    latent_variance: torch.Tensor
+    mean: torch.Tensor
+    variance: torch.Tensor
+
+
+@dataclass(frozen=True)
+class ViewsInputPrediction:
+    """The prediction of each view at new inputs of a GP prior on the latent space, without test data (MRD).
+
+    Attributes
+    ----------
+    latent_mean : torch.Tensor
+        The marginal means of q(X*), with the shape ``(N*, Q)``.
+    latent_variance : torch.Tensor
+        The marginal variances of q(X*), with the shape ``(N*, Q)``.
+    means : list of torch.Tensor
+        The predictive mean of each view, each with the shape ``(N*, Dv)``.
+    variances : list of torch.Tensor
+        The predictive variance of each view, each with the shape ``(N*, Dv)``.
+    """
+
+    latent_mean: torch.Tensor
+    latent_variance: torch.Tensor
+    means: list[torch.Tensor]
+    variances: list[torch.Tensor]
+
+
 class TestLatents(nn.Module):
-    """The variational parameters of q(X*) for test data.
+    """The free parameters of q(X*) for test data.
+
+    With the standard normal prior, they are the means and the variances of q(X*). With a GP prior, the prior maps
+    them to the marginals of q(X*).
 
     Parameters
     ----------
     initial_mean : torch.Tensor
-        The initial means of q(X*), with the shape ``(N*, Q)``.
+        The initial free means of q(X*), with the shape ``(N*, Q)``.
     """
 
     __test__ = False  # This is not a pytest test class.

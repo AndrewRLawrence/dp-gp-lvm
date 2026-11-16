@@ -27,6 +27,25 @@ This file records the notable changes of each version. The format follows
   dimension. These kernels have no psi statistics, so the models with the collapsed lower bound cannot use them.
 - `SumKernel` and `ProductKernel` combine kernels. `SumKernel.of(...)` and `ProductKernel.of(...)` give the kernel
   family of a combination, for example `SumKernel.of(ARDRBFKernel, ARDLinearKernel)`.
+- `GPPrior`: a Gaussian process prior on the latent space for sequence data, as in Damianou et al. (2016), section
+  3.3.2, and supplemental section E of the paper. Each latent dimension is a function of an observed input, for
+  example the time. `BayesianGPLVM`, `MRD`, and `DPGPLVM` take it in the new `latent_prior` argument. The default is
+  `StandardNormalPrior`, which gives the results of before.
+  - The lower bound stays exact. The prior changes only the KL term and the marginals of q(X).
+  - The free parameters are `μ̄` and the diagonal of `Λ`, with `μ = K_t μ̄` and `S = (K_t⁻¹ + Λ)⁻¹`. Their number
+    is the same as for the standard normal prior. The model parameters `x_mean` and `x_covar_raw` hold them.
+  - The kernel on the inputs is a kernel family, for example `ARDMatern32Kernel`. The model learns its
+    hyperparameters. The signal variance has the fixed value 1 by default.
+  - `sequence_ids` makes the sequences independent in the prior.
+  - The cost of one evaluation of the prior is `O(Q N³)`.
+- `predict_from_inputs(test_inputs)` for the three models: the prediction of all observed dimensions at new inputs
+  of a `GPPrior`, without test data. The result types are `InputPrediction` and `ViewsInputPrediction`.
+- The arguments `test_inputs` and `test_sequence_ids` of `new_data_bound`, `missing_data_bound`,
+  `predict_new_latent_variables`, and `predict_missing_data`. With a `GPPrior`, the test points and the training
+  points are not independent. The bound then uses q(X, X\*) of all points (Damianou et al. 2016, section 4.2). The
+  model optimises only the free parameters of the test points.
+- `LatentPrior`, `StandardNormalPrior`, and `JointLatents`. `kl_divergence()`, `joint_latents()`, and
+  `test_marginals()` are methods of the base class of the models.
 - `hyperprior_log_likelihood()` for `BayesianGPLVM` and `MRD`: the log density of the kernel hyperparameters and
   of the noise precision. `DPGPLVM` had this method before.
 
@@ -37,6 +56,8 @@ This file records the notable changes of each version. The format follows
   the noise precision in its `noise_precision` property, as before. The results of the models do not change.
 - `covariance_matrix` and `covariance_diag` have no `include_noise` argument. To get the covariance of noisy data,
   add the noise variance to the diagonal.
+- `"adam-lbfgs"` makes each gradient contiguous before the L-BFGS step. `torch.optim.LBFGS` cannot read a gradient
+  that passed through a transpose.
 - `ARDRBFKernel.prior_log_likelihood` does not include the noise precision. Use `hyperprior_log_likelihood()` of the
   model for the log density of all hyperparameters.
 
