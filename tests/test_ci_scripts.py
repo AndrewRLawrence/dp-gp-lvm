@@ -125,8 +125,18 @@ def test_read_metadata(release: ModuleType, tmp_path: Path) -> None:
         ("1.0.0", [], 13, "1.0.0.dev13"),
         ("1.0.0", ["v1.0.0"], 15, "1.0.1.dev15"),
         ("1.1.0", ["v1.0.0"], 20, "1.1.0.dev20"),
-        ("1.1.0rc1", [], 30, "1.1.0.dev30"),
-        ("1.1.0rc1", ["v1.1.0rc1"], 31, "1.1.1.dev31"),
+        ("1.1.0rc1", [], 30, "1.1.0rc1.dev30"),
+        ("1.1.0rc1", ["v1.1.0rc0"], 30, "1.1.0rc1.dev30"),
+        ("1.1.0rc1", ["v1.1.0rc1"], 31, "1.1.0rc2.dev31"),
+        ("1.1.0b0", ["v1.1.0a2", "v1.1.0b0"], 31, "1.1.0b1.dev31"),
+        ("1.1.0", ["v1.1.0rc1"], 32, "1.1.0rc2.dev32"),
+        (
+            "1.1.0",
+            ["v1.1.0rc0", "v1.1.0b3", "v1.1.0rc1", "v1.0.0rc9", "v1.1.0rc1x", "legacy-tf1"],
+            32,
+            "1.1.0rc2.dev32",
+        ),
+        ("1.1.0", ["v1.1.0rc1", "v1.1.0"], 33, "1.1.1.dev33"),
     ],
 )
 def test_dev_version(release: ModuleType, base: str, tags: list[str], commits: int, expected: str) -> None:
@@ -141,6 +151,30 @@ def test_dev_versions_sort_between_the_releases(release: ModuleType) -> None:
         release.dev_version("1.1.0", ["v1.0.0"], 20),
         "1.1.0",
         release.dev_version("1.1.0", ["v1.0.0", "v1.1.0"], 21),
+    ]
+    versions = [Version(item) for item in history]
+    assert versions == sorted(versions)
+    assert len(set(versions)) == len(versions)
+
+
+def test_dev_versions_sort_between_the_prereleases(release: ModuleType) -> None:
+    history = [
+        release.dev_version("1.0.0", [], 13),
+        release.dev_version("1.0.0rc0", [], 14),
+        "1.0.0rc0",
+        release.dev_version("1.0.0rc0", ["v1.0.0rc0"], 15),
+        release.dev_version("1.0.0", ["v1.0.0rc0"], 16),
+        "1.0.0",
+        release.dev_version("1.0.0", ["v1.0.0rc0", "v1.0.0"], 17),
+    ]
+    assert history == [
+        "1.0.0.dev13",
+        "1.0.0rc0.dev14",
+        "1.0.0rc0",
+        "1.0.0rc1.dev15",
+        "1.0.0rc1.dev16",
+        "1.0.0",
+        "1.0.1.dev17",
     ]
     versions = [Version(item) for item in history]
     assert versions == sorted(versions)
@@ -166,6 +200,7 @@ def test_is_prerelease(release: ModuleType, version: str, expected: bool) -> Non
     [
         ("refs/tags/v1.2.0", [], ["version=1.2.0", "prerelease=false"]),
         ("refs/heads/main", ["v1.2.0"], ["version=1.2.1.dev7", "prerelease=true"]),
+        ("refs/heads/main", ["v1.2.0rc1"], ["version=1.2.0rc2.dev7", "prerelease=true"]),
         ("refs/pull/9/merge", [], ["version=1.2.0.dev7", "prerelease=true"]),
     ],
 )

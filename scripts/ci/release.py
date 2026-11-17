@@ -3,7 +3,8 @@
 The release workflow ``.github/workflows/release.yml`` runs these commands:
 
 - ``python3 scripts/ci/release.py version --ref "$GITHUB_REF" --commits N --tags v1.0.0 ...``
-  prints the version to build. A tag ``vX.Y.Z`` gives ``X.Y.Z``. Other refs give a dev version ``X.Y.Z.devN``.
+  prints the version to build. A tag ``vX.Y.Z`` gives ``X.Y.Z``. Other refs give a dev version, for example
+  ``X.Y.Z.devN``.
 - ``python3 scripts/ci/release.py check-metadata`` checks that ``pyproject.toml``, ``CHANGELOG.md``, and
   ``CITATION.cff`` agree.
 - ``python3 scripts/ci/release.py check-dist dist --version X.Y.Z`` checks the files in the wheel and the sdist.
@@ -28,6 +29,7 @@ PACKAGE = "dp_gp_lvm"
 
 # The release versions that this project uses: X.Y.Z, or a pre-release X.Y.ZaN, X.Y.ZbN, or X.Y.ZrcN (PEP 440).
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?$")
+PHASES = ("a", "b", "rc")  # The order of the pre-release phases.
 HEADING = re.compile(r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>.+?))?\s*$", re.MULTILINE)
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 LINK_REFERENCE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
@@ -88,17 +90,43 @@ def changelog_dates(changelog: str) -> dict[str, str | None]:
     return {match.group("version"): match.group("date") for match in HEADING.finditer(changelog)}
 
 
+def last_prerelease(version: str, tags: list[str]) -> tuple[str, int] | None:
+    """Return the phase and the number of the last pre-release tag of ``version``, or None.
+
+    Only the release numbers ``X.Y.Z`` of ``version`` are used. For example, the tags ``v1.0.0b1`` and ``v1.0.0rc0``
+    give ``("rc", 0)`` for ``1.0.0`` and for ``1.0.0rc0``.
+    """
+    major, minor, patch = parse_version(version)
+    tagged = re.compile(rf"^v{major}\.{minor}\.{patch}(a|b|rc)(\d+)$")
+    parts = [(match.group(1), int(match.group(2))) for tag in tags if (match := tagged.match(tag))]
+    return max(parts, key=lambda part: (PHASES.index(part[0]), part[1]), default=None)
+
+
 def dev_version(base: str, tags: list[str], commits: int) -> str:
     """Return the dev version for a commit that is not a release.
 
-    The release numbers are those of ``base``. If the tag ``v<base>`` exists, the patch number increases by one, so
-    the dev version sorts after the release. ``commits`` is the number of commits in the history. On the linear
-    ``main`` branch, each commit has a different number.
+    The dev version sorts after the last release tag of ``base`` and before the next release (PEP 440):
+
+    - ``base`` has no tag, and no pre-release of it has a tag: ``<base>.devN``.
+    - ``base`` is a release ``X.Y.Z`` with a tag: ``X.Y.(Z+1).devN``.
+    - In the other cases, the last pre-release tag of ``X.Y.Z`` is ``X.Y.ZrcK``: ``X.Y.Zrc(K+1).devN``. Alpha and
+      beta versions are the same. For example, after the tag ``v1.0.0rc0``, the dev versions are ``1.0.0rc1.devN``
+      for the base ``1.0.0rc0`` and also for the base ``1.0.0``.
+
+    ``commits`` is the number of commits in the history. On the linear ``main`` branch, each commit has a different
+    number.
     """
     major, minor, patch = parse_version(base)
-    if f"v{base}" in tags:
-        patch += 1
-    return f"{major}.{minor}.{patch}.dev{commits}"
+    tagged = f"v{base}" in tags
+    if is_prerelease(base) and not tagged:
+        return f"{base}.dev{commits}"
+    if not is_prerelease(base) and tagged:
+        return f"{major}.{minor}.{patch + 1}.dev{commits}"
+    last = last_prerelease(base, tags)
+    if last is None:
+        return f"{base}.dev{commits}"
+    phase, number = last
+    return f"{major}.{minor}.{patch}{phase}{number + 1}.dev{commits}"
 
 
 def check_metadata(metadata: Metadata) -> None:
