@@ -48,6 +48,30 @@ This file records the notable changes of each version. The format follows
   model optimises only the free parameters of the test points.
 - `LatentPrior`, `StandardNormalPrior`, and `JointLatents`. `kl_divergence()`, `joint_latents()`, and
   `test_marginals()` are methods of the base class of the models.
+- `SVIDPGPLVM`: the DP-GP-LVM with stochastic variational inference. The DP atoms hold the hyperparameters of the
+  kernel family and of the likelihood. Each observed dimension uses the expected hyperparameters of its group
+  assignments, as in `DPGPLVM` with `expectation="plug_in"` (paper eqs. 22 and 23). The DP terms are the terms of
+  `DPGPLVM`.
+- `SVIMRD`: MRD with stochastic variational inference. Each known view has its own kernel, inducing inputs, and
+  likelihood hyperparameters.
+- The three SVI models have the same variational family for q(U), so an experiment can compare DP-GP-LVM with its
+  two special cases under one kernel, one likelihood, and one inference. `SVIDPGPLVM` with `truncation_level=1` and
+  `SVIMRD` with one view give the bound of `SVIBayesianGPLVM`.
+- On the synthetic data with two groups, `SVIDPGPLVM` with 3 restarts finds the two groups with the RBF kernel
+  and with the Matérn 5/2 kernel. It also finds them from counts (`PoissonLikelihood`) and from binary values
+  (`BernoulliLikelihood`) of the same latent functions. These are the measured limits for data that is not Gaussian:
+  - A count or a binary value has less information than a real value with small noise. The data must be larger.
+    The tests use 20 observed dimensions in each group, counts with a mean of approximately 30 and 120 points, and
+    binary data with 300 points.
+  - With 6 observed dimensions in each group and 120 points, a model without latent structure has a lower bound
+    that is as good. The model then does not learn the latent space.
+  - With 20 observed dimensions in each group, 120 points, and counts with a mean of approximately 5 or binary
+    values, the lower bounds of one group and of the two true groups differ by less than the difference between
+    two restarts. The restart with the best lower bound then does not always have the true groups.
+  - The DP assignments can go to one group in the first Adam steps. The initial q(U) is the prior, so the first
+    steps have no information about the kernel hyperparameters, and only the DP prior moves the assignments. Use
+    restarts (`fit_restarts`). In a test with 3 seeds, 100 Adam steps on q(U) alone before the training made the
+    best restart find the true groups from the weaker count data. The package does not do this step.
 - `SVIBayesianGPLVM`: the Bayesian GP-LVM with stochastic variational inference (SVI). It uses the doubly stochastic
   lower bound of Lalchand, Ravuri, and Lawrence (AISTATS 2022). The bound keeps q(U) as parameters and uses samples
   of the latent points. Thus, the model works with each kernel family (`kernel=`), each likelihood (`likelihood=`),
