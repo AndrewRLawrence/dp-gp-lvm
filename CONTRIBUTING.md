@@ -92,6 +92,8 @@ uploads a dev build to [TestPyPI](https://test.pypi.org/project/dp-gp-lvm/):
 - The version is `X.Y.Z.devN`. `N` is the number of commits on `main`, so each merged pull request has a different
   `N`.
 - `X.Y.Z` is the version in `pyproject.toml`. If that version has a release tag, `X.Y.Z` is the next patch version.
+- After a pre-release tag, for example `v1.0.0rc0`, the dev version is `1.0.0rc1.devN`, until the tag `v1.0.0`. Thus
+  each dev version sorts after the last tag and before the next release.
 
 To test a dev build, install it into an environment that already has the dependencies, for example the development
 environment. Do not get the dependencies from TestPyPI, because TestPyPI does not check its packages.
@@ -108,6 +110,14 @@ uv pip install --no-deps --default-index https://test.pypi.org/simple/ "dp-gp-lv
 
    ```bash
    uv version --bump minor
+   ```
+
+   For a pre-release, set the version directly. Use the PEP 440 form for the version and the tag, for example
+   `1.0.0rc0` and `v1.0.0rc0`. The workflow rejects other forms, such as `v1.0.0-rc.0`. It marks the GitHub release
+   as a pre-release.
+
+   ```bash
+   uv version 1.0.0rc0
    ```
 
 3. In `CHANGELOG.md`, change `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`. Add a new empty `## [Unreleased]`
