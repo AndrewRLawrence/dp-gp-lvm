@@ -1,4 +1,4 @@
-"""Shared code for the experiments: options, preprocessing, missing-data splits, metrics, and results."""
+"""Shared code for the experiments: options, models, preprocessing, missing-data splits, metrics, and results."""
 
 from __future__ import annotations
 
@@ -8,11 +8,40 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, overload
 
 import numpy as np
 import torch
 
-from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM, Restarts, fit_restarts
+from dp_gp_lvm import (
+    DPGPLVM,
+    MRD,
+    SVIDPGPLVM,
+    SVIMRD,
+    ARDLinearKernel,
+    ARDMatern12Kernel,
+    ARDMatern32Kernel,
+    ARDMatern52Kernel,
+    ARDPeriodicKernel,
+    ARDRationalQuadraticKernel,
+    ARDRBFKernel,
+    BayesianGPLVM,
+    BernoulliLikelihood,
+    BetaLikelihood,
+    GaussianLikelihood,
+    GPPrior,
+    KernelFamily,
+    LaplaceLikelihood,
+    Likelihood,
+    PoissonLikelihood,
+    Restarts,
+    StudentTLikelihood,
+    SumKernel,
+    SVIBayesianGPLVM,
+    SVIModel,
+    fit_restarts,
+)
+from dp_gp_lvm._numerics import column_scale
 from dp_gp_lvm.distributions import mvn_log_pdf
 from dp_gp_lvm.optim import OptimiserName
 
@@ -22,7 +51,38 @@ RESULTS_DIR = REPO_ROOT / "results"
 #: The seed of the initial model values in most legacy experiments.
 LEGACY_SEED = 1
 
-type Model = BayesianGPLVM | MRD | DPGPLVM
+type Model = BayesianGPLVM | MRD | DPGPLVM | SVIBayesianGPLVM | SVIMRD | SVIDPGPLVM
+
+#: The models with one data array. Their prediction methods take arrays, not lists of views.
+type SingleViewModel = BayesianGPLVM | DPGPLVM | SVIBayesianGPLVM | SVIDPGPLVM
+
+#: The kind of a model. The ``--inference`` option selects the collapsed model or the SVI model of each kind.
+type ModelKind = Literal["bgplvm", "mrd", "dp_gp_lvm"]
+
+#: The kernel families of the ``--kernel`` and ``--time-kernel`` options.
+KERNELS: dict[str, KernelFamily] = {
+    "rbf": ARDRBFKernel,
+    "matern12": ARDMatern12Kernel,
+    "matern32": ARDMatern32Kernel,
+    "matern52": ARDMatern52Kernel,
+    "rational-quadratic": ARDRationalQuadraticKernel,
+    "periodic": ARDPeriodicKernel,
+    "linear": ARDLinearKernel,
+    "rbf+linear": SumKernel.of(ARDRBFKernel, ARDLinearKernel),
+}
+
+#: The likelihoods of the ``--likelihood`` option.
+LIKELIHOODS: dict[str, Callable[[], Likelihood]] = {
+    "gaussian": GaussianLikelihood,
+    "student-t": StudentTLikelihood,
+    "laplace": LaplaceLikelihood,
+    "bernoulli": BernoulliLikelihood,
+    "poisson": PoissonLikelihood,
+    "beta": BetaLikelihood,
+}
+
+#: The likelihoods for data that the experiments must not scale to zero mean and unit variance.
+RAW_DATA_LIKELIHOODS = frozenset({"bernoulli", "poisson", "beta"})
 
 
 @dataclass(frozen=True)
@@ -47,12 +107,43 @@ class Settings:
     latent_dims: int
     inducing_points: int
     truncation_level: int
-    optimiser: OptimiserName
+    optimiser: OptimiserName | None
     output: Path
     force: bool
     log_every: int
     restarts: int = 1
     model_seed: int | None = None
+    inference: Literal["collapsed", "svi"] = "collapsed"
+    kernel: str = "rbf"
+    likelihood: str = "gaussian"
+    latent_prior: Literal["standard", "time"] = "standard"
+    time_kernel: str = "matern32"
+    sampling: Literal["fresh", "fixed"] | None = None
+    samples: int = 8
+    batch_size: int | None = None
+
+    @property
+    def predict_optimiser(self) -> OptimiserName:
+        """The optimiser for the fit of q(X*). Its objective is deterministic, so the default is ``"adam-lbfgs"``."""
+        return "adam-lbfgs" if self.optimiser is None else self.optimiser
+
+    @property
+    def raw_data(self) -> bool:
+        """True if the likelihood needs data that is not scaled, for example counts."""
+        return self.likelihood in RAW_DATA_LIKELIHOODS
+
+    @property
+    def tag(self) -> str:
+        """A short name of the settings that are not the defaults of the paper, for example ``"svi-matern52"``.
+
+        The results of such a run go to a directory with this name, so they do not replace the default results.
+        """
+        parts = ["svi"] if self.inference == "svi" else []
+        parts += [self.kernel] if self.kernel != "rbf" else []
+        parts += [self.likelihood] if self.likelihood != "gaussian" else []
+        parts += ["time"] if self.latent_prior == "time" else []
+        parts += ["fresh"] if self.inference == "svi" and self.sampling == "fresh" else []
+        return "-".join(parts)
 
     def model_seeds(self, default: int) -> list[int]:
         """Return the seed of each restart: ``restarts`` consecutive seeds from the first seed.
@@ -92,12 +183,42 @@ def parser(description: str, defaults: Defaults, name: str) -> argparse.Argument
     p.add_argument(
         "--optimiser",
         choices=["adam-lbfgs", "adam", "legacy"],
-        default="adam-lbfgs",
+        default=None,
         help=(
             "'adam-lbfgs' does Adam steps for the first fifth of the steps, then L-BFGS steps until convergence. "
-            "'adam' does Adam steps only. 'legacy' copies the Adam numerics of TensorFlow 1.15."
+            "'adam' does Adam steps only. 'legacy' copies the Adam numerics of TensorFlow 1.15. If not set: "
+            "'adam-lbfgs', or 'adam' for an SVI model with --sampling fresh."
         ),
     )
+    p.add_argument(
+        "--inference",
+        choices=["collapsed", "svi"],
+        default="collapsed",
+        help=(
+            "'collapsed' uses the exact lower bound of the paper. It needs the RBF kernel and the Gaussian "
+            "likelihood. 'svi' uses the doubly stochastic lower bound. It allows each kernel and each likelihood."
+        ),
+    )
+    p.add_argument("--kernel", choices=sorted(KERNELS), default="rbf", help="The kernel on the latent space.")
+    p.add_argument("--likelihood", choices=sorted(LIKELIHOODS), default="gaussian", help="The likelihood.")
+    p.add_argument(
+        "--latent-prior",
+        choices=["standard", "time"],
+        default="standard",
+        help="'time' puts a GP prior on the latent space. The row number of the training data is the time.",
+    )
+    p.add_argument("--time-kernel", choices=sorted(KERNELS), default="matern32", help="The kernel of the time prior.")
+    p.add_argument(
+        "--sampling",
+        choices=["fresh", "fixed"],
+        default=None,
+        help=(
+            "For SVI: 'fixed' keeps the samples of the latent points, so L-BFGS works. 'fresh' draws new samples "
+            "for each step. If not set: 'fixed', or 'fresh' with --batch-size."
+        ),
+    )
+    p.add_argument("--samples", type=positive_int, default=8, help="For SVI: samples of each latent point.")
+    p.add_argument("--batch-size", type=positive_int, default=None, help="For SVI: the size of each mini-batch.")
     p.add_argument("--output", type=Path, default=RESULTS_DIR / name, help="Directory for the results.")
     p.add_argument("--force", action="store_true", help="Run again, even if a result file exists.")
     p.add_argument("--log-every", type=int, default=100, help="Print the objective every this many steps.")
@@ -131,6 +252,135 @@ def settings(args: argparse.Namespace) -> Settings:
         log_every=args.log_every,
         restarts=args.restarts,
         model_seed=args.model_seed,
+        inference=args.inference,
+        kernel=args.kernel,
+        likelihood=args.likelihood,
+        latent_prior=args.latent_prior,
+        time_kernel=args.time_kernel,
+        sampling=args.sampling,
+        samples=args.samples,
+        batch_size=args.batch_size,
+    )
+
+
+def scale_data(run: Settings, train: np.ndarray, *others: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Scale each column to zero mean and unit variance, unless the likelihood needs the data as it is.
+
+    The Bernoulli, Poisson, and beta likelihoods need binary values, counts, and proportions.
+    """
+    return (train, *others) if run.raw_data else standardise(train, *others)
+
+
+@overload
+def make_model(
+    kind: Literal["bgplvm", "dp_gp_lvm"],
+    data: np.ndarray | Sequence[np.ndarray],
+    run: Settings,
+    seed: int,
+    *,
+    mask_size: int = 1,
+    times: np.ndarray | None = None,
+) -> SingleViewModel: ...
+
+
+@overload
+def make_model(
+    kind: Literal["mrd"],
+    data: np.ndarray | Sequence[np.ndarray],
+    run: Settings,
+    seed: int,
+    *,
+    mask_size: int = 1,
+    times: np.ndarray | None = None,
+) -> MRD | SVIMRD: ...
+
+
+def make_model(
+    kind: ModelKind,
+    data: np.ndarray | Sequence[np.ndarray],
+    run: Settings,
+    seed: int,
+    *,
+    mask_size: int = 1,
+    times: np.ndarray | None = None,
+) -> Model:
+    """Return a new model of one kind, with the inference, kernel, likelihood, and prior of the run settings.
+
+    Parameters
+    ----------
+    kind : {"bgplvm", "mrd", "dp_gp_lvm"}
+        The kind of the model.
+    data : numpy.ndarray or sequence of numpy.ndarray
+        The training data, with the shape ``(N, D)``. For ``"mrd"``, give one array for each view.
+    run : Settings
+        The run settings.
+    seed : int
+        The seed of the initial model values.
+    mask_size : int, default 1
+        For ``"dp_gp_lvm"``: the number of adjacent observed dimensions that share one group assignment.
+    times : numpy.ndarray, optional
+        The time of each row, for ``--latent-prior time``. The default is the row number.
+
+    Returns
+    -------
+    Model
+        The collapsed model or the SVI model of this kind.
+    """
+    views = [np.asarray(v) for v in data] if kind == "mrd" else [np.asarray(data)]
+    num_points = views[0].shape[0]
+    prior = None
+    if run.latent_prior == "time":
+        prior = GPPrior(np.arange(num_points) if times is None else times, KERNELS[run.time_kernel])
+    q, m, t = run.latent_dims, run.inducing_points, run.truncation_level
+    if run.inference == "collapsed":
+        if run.kernel != "rbf" or run.likelihood != "gaussian":
+            msg = "The collapsed models need the RBF kernel and the Gaussian likelihood. Use --inference svi."
+            raise ValueError(msg)
+        if kind == "bgplvm":
+            return BayesianGPLVM(views[0], q, m, latent_prior=prior, seed=seed)
+        if kind == "mrd":
+            return MRD(views, q, m, latent_prior=prior, seed=seed)
+        return DPGPLVM(views[0], q, m, t, mask_size=mask_size, latent_prior=prior, seed=seed)
+    kernel, likelihood = KERNELS[run.kernel], LIKELIHOODS[run.likelihood]()
+    if kind == "bgplvm":
+        return SVIBayesianGPLVM(
+            views[0],
+            q,
+            m,
+            kernel=kernel,
+            likelihood=likelihood,
+            latent_prior=prior,
+            num_samples=run.samples,
+            batch_size=run.batch_size,
+            sampling=run.sampling,
+            seed=seed,
+        )
+    if kind == "mrd":
+        return SVIMRD(
+            views,
+            q,
+            m,
+            kernel=kernel,
+            likelihood=likelihood,
+            latent_prior=prior,
+            num_samples=run.samples,
+            batch_size=run.batch_size,
+            sampling=run.sampling,
+            seed=seed,
+        )
+    return SVIDPGPLVM(
+        views[0],
+        q,
+        m,
+        t,
+        mask_size=mask_size,
+        kernel=kernel,
+        likelihood=likelihood,
+        latent_prior=prior,
+        num_samples=run.samples,
+        batch_size=run.batch_size,
+        sampling=run.sampling,
+        seed=seed,
     )
 
 
@@ -140,8 +390,7 @@ def standardise(train: np.ndarray, *others: np.ndarray) -> tuple[np.ndarray, ...
     A column with zero variance keeps a scale of one, as in ``sklearn.preprocessing.StandardScaler``.
     """
     mean = train.mean(axis=0)
-    scale = train.std(axis=0)
-    scale[scale == 0.0] = 1.0
+    scale = column_scale(train)
     return tuple((x - mean) / scale for x in (train, *others))
 
 
@@ -281,7 +530,11 @@ def train[M: Model](
 
 
 def model_arrays(model: Model) -> dict[str, np.ndarray]:
-    """Return the learned parameters of a model as numpy arrays, with the legacy result names."""
+    """Return the learned parameters of a model as numpy arrays, with the legacy result names.
+
+    For an SVI model, ``final_cost`` is the result of ``evaluate()``, and the hyperparameters of the likelihood have
+    names that start with ``likelihood_``.
+    """
 
     def array(value: torch.Tensor | Sequence[torch.Tensor]) -> np.ndarray:
         if isinstance(value, torch.Tensor):
@@ -290,11 +543,23 @@ def model_arrays(model: Model) -> dict[str, np.ndarray]:
 
     arrays = {
         "ard_weights": array(model.ard_weights),
-        "signal_variance": array(model.signal_variance),
-        "noise_precision": array(model.noise_precision),
         "x_u": array(model.inducing_input),
         "x_mean": array(model.latent_mean),
         "x_covar": array(model.latent_variance),
+    }
+    if isinstance(model, SVIModel):
+        with torch.no_grad():
+            arrays["final_cost"] = np.array(model.evaluate().item())
+        arrays |= {f"likelihood_{name}": array(value) for name, value in model.likelihood_hyperparameters.items()}
+        if isinstance(model, SVIDPGPLVM):
+            w_1, w_2 = model.dp.q_alpha
+            arrays |= {"assignments": array(model.assignments), "q_alpha_w1": array(w_1), "q_alpha_w2": array(w_2)}
+            arrays |= {f"kernel_atom_{name}": array(value) for name, value in model.kernel_atoms.items()}
+            arrays |= {f"likelihood_atom_{name}": array(value) for name, value in model.likelihood_atoms.items()}
+        return arrays
+    arrays |= {
+        "signal_variance": array(model.signal_variance),
+        "noise_precision": array(model.noise_precision),
         "final_cost": np.array(model.objective().detach().item()),
     }
     if isinstance(model, DPGPLVM):
@@ -315,7 +580,7 @@ class ResultStore:
     """Save and find the result files of one experiment."""
 
     def __init__(self, run: Settings) -> None:
-        self.directory = run.output
+        self.directory = run.output / run.tag if run.tag else run.output
         self.force = run.force
         self.directory.mkdir(parents=True, exist_ok=True)
 
@@ -392,21 +657,20 @@ def train_and_predict(
     trained = train(build, run, label, default_seed)
     model = trained.model
     print(f"Fitting q(X*) for {label} for up to {run.predict_iterations} steps.")
-    if isinstance(model, MRD):
+    steps, rate, optimiser = run.predict_iterations, run.learning_rate, run.predict_optimiser
+    if isinstance(model, MRD | SVIMRD):
         views_result = model.predict_missing_data(
-            [y_observed], iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser
+            [y_observed], iterations=steps, learning_rate=rate, optimiser=optimiser
         )
         latent_mean, latent_variance = views_result.latent_mean, views_result.latent_variance
         mean, covariance = views_result.bound.means[0], views_result.bound.covariances[0]
     else:
-        result = model.predict_missing_data(
-            y_observed, iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser
-        )
+        result = model.predict_missing_data(y_observed, iterations=steps, learning_rate=rate, optimiser=optimiser)
         latent_mean, latent_variance = result.latent_mean, result.latent_variance
         mean, covariance = result.bound.mean, result.bound.covariance
     log_likelihood = gaussian_log_likelihood(y_unobserved, mean, covariance)
     print(f"  {label} ground-truth log-likelihood: {log_likelihood:.4f}")
-    return trained, {
+    prediction: dict[str, np.ndarray | float] = {
         "x_test_mean": latent_mean.cpu().numpy(),
         "x_test_covar": latent_variance.cpu().numpy(),
         "predicted_mean": mean.cpu().numpy(),
@@ -415,3 +679,11 @@ def train_and_predict(
         "y_test_unobserved": y_unobserved,
         "gt_log_likelihood": log_likelihood,
     }
+    if isinstance(model, SVIModel):
+        # The Gaussian value above uses only the predictive mean and variance. This value uses the likelihood.
+        held_out = np.hstack([np.full_like(y_observed, np.nan), y_unobserved])
+        with torch.no_grad():
+            density = float(model.predictive_log_density(held_out, latent_mean, latent_variance).sum())
+        print(f"  {label} ground-truth log predictive density: {density:.4f}")
+        prediction["gt_log_predictive_density"] = density
+    return trained, prediction

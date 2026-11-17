@@ -218,7 +218,11 @@ class _CachedClosure:
                 parameter.grad = None
         self.evaluations += 1
         self._point, self._value = point, value
-        self._gradients = [parameter.grad for parameter in self._parameters]
+        # L-BFGS reads each gradient with ``view``, which needs contiguous memory. A gradient that passes through a
+        # transpose is not contiguous.
+        self._gradients = [
+            None if parameter.grad is None else parameter.grad.contiguous() for parameter in self._parameters
+        ]
 
 
 def _adam_steps(

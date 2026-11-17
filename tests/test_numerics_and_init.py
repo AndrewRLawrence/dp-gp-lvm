@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from dp_gp_lvm._init import nearest_neighbour, pca_latent_init
-from dp_gp_lvm._numerics import as_numpy, as_tensor, inverse_softplus, positive
+from dp_gp_lvm._numerics import as_numpy, as_tensor, column_scale, inverse_softplus, positive
 
 
 def test_inverse_softplus_inverts_softplus() -> None:
@@ -28,6 +28,17 @@ def test_array_conversions() -> None:
     assert as_tensor([1, 2]).dtype == torch.float64
     np.testing.assert_array_equal(as_numpy(tensor.requires_grad_(True)), np.arange(4.0))
     assert as_numpy([[1, 2]]).dtype == np.float64
+
+
+def test_column_scale_gives_one_for_a_constant_column(rng: np.random.Generator) -> None:
+    values = rng.standard_normal((8, 4))
+    values[:, 1] = 0.0
+    # The mean of eight copies of this value has a rounding error, so the standard deviation is not exactly zero.
+    values[:, 2] = np.nextafter(np.log1p(2.0), 0.0)
+    values[:, 3] = -1.0e6 * values[:, 2]
+    assert values.std(axis=0)[2] > 0.0
+    scale = column_scale(values)
+    np.testing.assert_allclose(scale, [values[:, 0].std(), 1.0, 1.0, 1.0])
 
 
 def test_pca_has_a_fixed_sign_convention(rng: np.random.Generator) -> None:

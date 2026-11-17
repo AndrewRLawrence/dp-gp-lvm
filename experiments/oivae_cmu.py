@@ -16,12 +16,13 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 
-from dp_gp_lvm import DPGPLVM
 from dp_gp_lvm.plotting import plot_ard_weights
 from experiments._common import (
     Defaults,
     ResultStore,
     Settings,
+    SingleViewModel,
+    make_model,
     parser,
     save_figure,
     settings,
@@ -58,9 +59,13 @@ def joint_relevance(ard_weights: np.ndarray, joint_dims: dict[str, int], skip: i
     return [[names[j] for j in np.argsort(per_joint[:, q])[::-1][:3]] for q in order]
 
 
-def dp_gp_lvm_builder(y: np.ndarray, run: Settings) -> Callable[[int], DPGPLVM]:
+def dp_gp_lvm_builder(y: np.ndarray, run: Settings) -> Callable[[int], SingleViewModel]:
     """Return a function that takes a seed and returns a new DP-GP-LVM with the run settings."""
-    return lambda seed: DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=seed)
+
+    def build(seed: int) -> SingleViewModel:
+        return make_model("dp_gp_lvm", y, run, seed)
+
+    return build
 
 
 def run_comparison(run: Settings, store: ResultStore, num_frames: int) -> None:
@@ -95,7 +100,10 @@ def run_test_loglikelihood(run: Settings, store: ResultStore, frame_step: int, s
             arrays: dict[str, np.ndarray | float] = {**trained.arrays()}
             for test_sequence, y_test in zip(TEST_SEQUENCES, y_tests, strict=True):
                 prediction = model.predict_new_latent_variables(
-                    y_test, iterations=run.predict_iterations, learning_rate=run.learning_rate, optimiser=run.optimiser
+                    y_test,
+                    iterations=run.predict_iterations,
+                    learning_rate=run.learning_rate,
+                    optimiser=run.predict_optimiser,
                 )
                 arrays[f"test_log_likelihood_{test_sequence}"] = prediction.bound.test_log_likelihood.item()
                 arrays[f"x_test_mean_{test_sequence}"] = prediction.latent_mean.numpy()

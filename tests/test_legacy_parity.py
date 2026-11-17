@@ -15,7 +15,7 @@ from golden import assign, dp_gp_lvm_parameters, load, make_bgplvm, make_dp, mak
 
 from dp_gp_lvm import DPGPLVM, ARDRBFKernel, fit
 from dp_gp_lvm._init import nearest_neighbour, pca_latent_init
-from dp_gp_lvm._numerics import positive
+from dp_gp_lvm._numerics import JITTER, positive
 from dp_gp_lvm.distributions import (
     beta_entropy,
     gamma_entropy,
@@ -72,32 +72,34 @@ def arrays() -> dict[str, np.ndarray]:
 
 @pytest.fixture(scope="module")
 def kernel(arrays: dict[str, np.ndarray]) -> ARDRBFKernel:
-    return ARDRBFKernel(t(arrays["in.gamma"]), t(arrays["in.alpha"]), t(arrays["in.beta"]))
+    return ARDRBFKernel(t(arrays["in.gamma"]), t(arrays["in.alpha"]))
 
 
 class TestKernelAndDistributions:
     def test_covariance_matrices(self, arrays: dict[str, np.ndarray], kernel: ARDRBFKernel) -> None:
         x, x1 = t(arrays["in.x"]), t(arrays["in.x1"])
+        # The kernel does not hold the noise. The test adds the noise variance to the diagonal.
+        noise = torch.reciprocal(t(arrays["in.beta"])).unsqueeze(-1) * torch.eye(x.shape[0], dtype=torch.float64)
         close(kernel.covariance_matrix(x), arrays["out.k_xx"])
-        close(kernel.covariance_matrix(x, include_noise=True), arrays["out.k_xx_noise"])
+        close(kernel.covariance_matrix(x) + noise, arrays["out.k_xx_noise"])
         close(kernel.covariance_matrix(x, include_jitter=True), arrays["out.k_xx_jitter"])
-        close(kernel.covariance_matrix(x, include_noise=True, include_jitter=True), arrays["out.k_xx_noise_jitter"])
+        close(kernel.covariance_matrix(x, include_jitter=True) + noise, arrays["out.k_xx_noise_jitter"])
         close(kernel.covariance_matrix(x, x1), arrays["out.k_x_x1"])
-        close(
-            kernel.covariance_matrix(x, x1, include_noise=True, include_jitter=True), arrays["out.k_x_x1_noise_jitter"]
-        )
+        close(kernel.covariance_matrix(x, x1, include_jitter=True), arrays["out.k_x_x1_noise_jitter"])
 
     def test_covariance_diagonals(self, arrays: dict[str, np.ndarray], kernel: ARDRBFKernel) -> None:
         x = t(arrays["in.x"])
         close(kernel.covariance_diag(x), arrays["out.k_diag"])
-        close(kernel.covariance_diag(x, include_noise=True, include_jitter=True), arrays["out.k_diag_noise_jitter"])
+        noise = torch.reciprocal(t(arrays["in.beta"]))
+        close(kernel.covariance_diag(x) + noise + JITTER, arrays["out.k_diag_noise_jitter"])
 
     def test_psi_statistics(self, arrays: dict[str, np.ndarray], kernel: ARDRBFKernel) -> None:
         x_u, mean, var = t(arrays["in.x_u"]), t(arrays["in.x_mean"]), t(arrays["in.x_var"])
         close(kernel.psi_0(x_u, mean, var), arrays["out.psi_0"])
         close(kernel.psi_1(x_u, mean, var), arrays["out.psi_1"])
         close(kernel.psi_2(x_u, mean, var), arrays["out.psi_2"])
-        close(kernel.prior_log_likelihood, arrays["out.hyperprior"])
+        hyperprior = kernel.prior_log_likelihood + log_normal_log_pdf(t(arrays["in.beta"])).sum()
+        close(hyperprior, arrays["out.hyperprior"])
 
     def test_distributions(self, arrays: dict[str, np.ndarray]) -> None:
         close(beta_entropy(t(arrays["in.beta_a"]), t(arrays["in.beta_b"])), arrays["out.beta_entropy"])
@@ -143,12 +145,8 @@ def test_objective_and_parts(case: str) -> None:
     model, _ = make_model(case)
     close(model.objective(), arrays["out.objective"])
     close(model.kl_divergence(), arrays["out.kl"])
-    if case == "bgplvm":
-        close(model.kernel.prior_log_likelihood, arrays["out.hyperprior"])
-    elif case == "mrd":
-        close(sum(k.prior_log_likelihood for k in model.kernels), arrays["out.hyperprior"])
-    else:
-        close(model.hyperprior_log_likelihood(), arrays["out.hyperprior"])
+    close(model.hyperprior_log_likelihood(), arrays["out.hyperprior"])
+    if case.startswith("dp_gp_lvm"):
         close(model.dp.objective(), arrays["out.dp_objective"])
 
 

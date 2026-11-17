@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import math
+
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -12,6 +15,9 @@ DTYPE = torch.float64
 
 #: The jitter that the covariance matrices add to their diagonal.
 JITTER = 1.0e-8
+
+#: A column is constant if its standard deviation is not more than this fraction of its largest absolute value.
+CONSTANT_TOLERANCE = 1.0e-12
 
 #: The type of array input that the public functions accept.
 type ArrayInput = npt.ArrayLike | torch.Tensor
@@ -101,6 +107,27 @@ def as_numpy(value: ArrayInput) -> np.ndarray:
     return np.array(value, dtype=np.float64)
 
 
+def column_scale(values: np.ndarray) -> np.ndarray:
+    """Return the standard deviation of each column, and one for each constant column.
+
+    The mean of equal values can have a rounding error. Thus, the standard deviation of a constant column is not
+    always exactly zero, and a comparison with zero is not sufficient to find such a column.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The values, with the shape ``(N, D)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The scale of each column, with the shape ``(D,)``. It is safe as a divisor.
+    """
+    scale = values.std(axis=0)
+    scale[scale <= CONSTANT_TOLERANCE * np.abs(values).max(axis=0)] = 1.0
+    return scale
+
+
 def batch_eye(size: int, batch: int, like: torch.Tensor) -> torch.Tensor:
     """Return a batch of identity matrices with the type and device of ``like``.
 
@@ -169,3 +196,39 @@ def transpose(matrices: torch.Tensor) -> torch.Tensor:
         The tensor with the last two dimensions swapped.
     """
     return matrices.transpose(-2, -1)
+
+
+@functools.lru_cache(maxsize=16)
+def _gauss_hermite_arrays(num_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the Gauss-Hermite nodes and weights for a standard normal weight function."""
+    nodes, weights = np.polynomial.hermite.hermgauss(num_points)
+    return math.sqrt(2.0) * nodes, weights / math.sqrt(math.pi)
+
+
+def gauss_hermite(
+    num_points: int, *, dtype: torch.dtype = DTYPE, device: torch.device | str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the nodes and the weights of the Gauss-Hermite quadrature for a standard normal variable.
+
+    The expectation of a function ``g`` of a standard normal variable is approximately ``Σ_k weights[k] g(nodes[k])``.
+    The rule is exact for a polynomial of degree ``2 * num_points - 1`` or less.
+
+    Parameters
+    ----------
+    num_points : int
+        The number of quadrature points.
+    dtype : torch.dtype, default torch.float64
+        The floating point type of the output.
+    device : torch.device or str, optional
+        The device of the output.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        The nodes and the weights, each with the shape ``(num_points,)``. The weights sum to one.
+    """
+    if num_points <= 0:
+        msg = f"The number of quadrature points must be positive. The value is {num_points}."
+        raise ValueError(msg)
+    nodes, weights = _gauss_hermite_arrays(num_points)
+    return torch.as_tensor(nodes, dtype=dtype, device=device), torch.as_tensor(weights, dtype=dtype, device=device)

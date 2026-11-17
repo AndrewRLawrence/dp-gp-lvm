@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from dp_gp_lvm import ARDRBFKernel
+from dp_gp_lvm._numerics import JITTER
 
 
 def standardise(y: np.ndarray) -> np.ndarray:
@@ -28,12 +29,10 @@ def two_group_data(rng: np.random.Generator, num_samples: int = 60, dims_per_gro
     x = rng.standard_normal((num_samples, 5))
     groups = []
     for ard, beta in (([1.0, 1.0, 0.0, 0.0, 0.0], 100.0), ([1.0, 0.0, 1.0, 0.0, 0.0], 500.0)):
-        kernel = ARDRBFKernel(
-            torch.tensor([ard], dtype=torch.float64),
-            torch.ones(1, 1, dtype=torch.float64),
-            torch.tensor([[beta]], dtype=torch.float64),
-        )
-        covariance = kernel.covariance_matrix(torch.as_tensor(x), include_noise=True, include_jitter=True)[0].numpy()
+        kernel = ARDRBFKernel(torch.tensor([ard], dtype=torch.float64), torch.ones(1, 1, dtype=torch.float64))
+        eye = torch.eye(num_samples, dtype=torch.float64)
+        # The noise comes before the jitter, as in the legacy code. The order sets the rounding of the samples.
+        covariance = (kernel.covariance_matrix(torch.as_tensor(x))[0] + eye / beta + JITTER * eye).numpy()
         samples = rng.multivariate_normal(np.zeros(num_samples), covariance, size=dims_per_group, method="cholesky")
         groups.append(samples.T)
     return standardise(np.hstack(groups))

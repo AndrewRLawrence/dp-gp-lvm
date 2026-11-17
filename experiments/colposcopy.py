@@ -9,12 +9,12 @@ Run ``uv run python -m experiments.colposcopy --help`` for the options.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import partial
 
 import numpy as np
 
-from dp_gp_lvm import DPGPLVM
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
-from experiments._common import Defaults, ResultStore, parser, save_figure, settings, standardise, train
+from experiments._common import Defaults, ResultStore, make_model, parser, save_figure, scale_data, settings, train
 from experiments._data import colposcopy
 
 DEFAULTS = Defaults(iterations=2500, learning_rate=0.05, latent_dims=15, inducing_points=50, truncation_level=20)
@@ -30,15 +30,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = settings(args)
     store = ResultStore(run)
     attributes, assessments = colposcopy(args.modality)
-    (y,) = standardise(np.hstack([attributes, assessments]))
+    (y,) = scale_data(run, np.hstack([attributes, assessments]))
     print(f"Colposcopy '{args.modality}': N={y.shape[0]}, D={y.shape[1]} (62 attributes and 7 assessments).")
     result = f"dp_gp_lvm_colposcopy_{args.modality}"
     if not store.skip(result):
-        trained = train(
-            lambda seed: DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=seed),
-            run,
-            "dp_gp_lvm",
-        )
+        trained = train(partial(make_model, "dp_gp_lvm", y, run), run, "dp_gp_lvm")
         config = {"modality": args.modality, **vars(run), **trained.config()}
         store.save(result, config, y_train=y, **trained.arrays())
     arrays = store.load(result)
