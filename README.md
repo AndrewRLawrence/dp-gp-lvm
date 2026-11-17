@@ -19,6 +19,15 @@ the latent space, and the hyperparameters with one variational lower bound.
 This repository contains the PyTorch implementation of the
 [ICML 2019 paper](https://proceedings.mlr.press/v97/lawrence19a.html) and of related thesis work.
 
+The package also has three extensions of the paper:
+
+- More kernels: Matérn, rational quadratic, periodic, linear, and sums and products of kernels.
+- A GP prior on the latent space for sequence data.
+- Likelihoods for data that is not Gaussian: counts, binary values, proportions, and noise with heavy tails.
+
+The first and the third extension use models with stochastic variational inference (SVI). The second extension works
+with all models.
+
 ## Contents
 
 - [Installation](#installation)
@@ -113,6 +122,70 @@ mean, variance = forecast.mean, forecast.variance  # Each has the shape (10, D).
 of test rows, give their times: `model.predict_missing_data(y_new[:, :Do], test_inputs=new_times)`. For more than
 one sequence, give `sequence_ids` to `GPPrior`. Sequences are then independent in the prior.
 
+### Other kernels and other data types
+
+The lower bound of the paper has a closed form only for the RBF kernel and Gaussian noise. The SVI models do not
+have these two conditions. They keep the distribution of the inducing variables as parameters, and they use samples
+of the latent points. [docs/svi-bound.md](docs/svi-bound.md) gives the lower bound and its relation to the bound of
+the paper.
+
+`SVIDPGPLVM`, `SVIBayesianGPLVM`, and `SVIMRD` take the arguments of `DPGPLVM`, `BayesianGPLVM`, and `MRD`. They also
+take a kernel family and a likelihood:
+
+```python
+from dp_gp_lvm import SVIDPGPLVM, ARDMatern52Kernel, PoissonLikelihood
+
+counts = np.load("my_counts.npy")  # Counts, with the shape (N, D). Do not standardise them.
+model = SVIDPGPLVM(
+    counts,
+    num_latent_dims=10,
+    num_inducing_points=25,
+    truncation_level=8,
+    kernel=ARDMatern52Kernel,
+    likelihood=PoissonLikelihood(),
+    seed=0,
+)
+history = fit(model, iterations=2000, learning_rate=0.05)  # Adam, then L-BFGS, as for the other models.
+
+groups = model.assignments.argmax(dim=-1)  # The DP group of each observed dimension.
+objective = model.evaluate()  # A deterministic estimate of the objective, with many samples.
+```
+
+| Kernel family | Functions |
+|---|---|
+| `ARDRBFKernel` | Very smooth. |
+| `ARDMatern52Kernel`, `ARDMatern32Kernel`, `ARDMatern12Kernel` | Differentiable two times, one time, or not at all. |
+| `ARDRationalQuadraticKernel` | A mixture of RBF kernels with different length scales. |
+| `ARDPeriodicKernel` | Periodic in each latent dimension. |
+| `ARDLinearKernel` | Linear. |
+| `SumKernel.of(...)`, `ProductKernel.of(...)` | Sums and products, for example `SumKernel.of(ARDRBFKernel, ARDLinearKernel)`. |
+
+Each kernel has ARD weights. A weight of zero removes that latent dimension from the kernel, so the DP groups the
+observed dimensions as in the paper.
+
+| Likelihood | Data |
+|---|---|
+| `GaussianLikelihood()` | Real values. Standardise each column. This is the default. |
+| `StudentTLikelihood()`, `LaplaceLikelihood()` | Real values with outliers. Standardise each column. |
+| `PoissonLikelihood()` | Counts. |
+| `BernoulliLikelihood()` | Binary values, 0 or 1. |
+| `BetaLikelihood()` | Proportions between 0 and 1, for example pixel intensities. |
+| `MixedLikelihood(likelihoods, columns)` | A different likelihood for each group of columns. |
+
+Other properties of the SVI models:
+
+- A `NaN` in the data is a missing value, in the training data and in the test data.
+- The models keep the samples of the latent points (`sampling="fixed"`). The objective is then deterministic, so
+  the default optimiser `"adam-lbfgs"` works. `num_samples` sets the number of samples.
+- `sampling="fresh"` draws new samples in each step, and `batch_size=` uses a mini-batch of the rows. `fit` then
+  uses Adam. Use these settings for large data. Adam needs many more steps than L-BFGS.
+- `fit_restarts` selects the restart with the lowest `evaluate()` value.
+- `predict_missing_data` takes the first `Do` columns of the test rows, as the other models. It also takes all `D`
+  columns with `NaN` for each missing value. `predictive_log_density` gives a score for held-out values.
+
+A count or a binary value has less information than a real value. Thus, the SVI models need more data to find the
+groups from such data. `CHANGELOG.md` gives the measured limits.
+
 ## Models
 
 | Name | Description | Reference |
@@ -126,6 +199,9 @@ one sequence, give `sequence_ids` to `GPPrior`. Sequences are then independent i
 | `ARDRationalQuadraticKernel`, `ARDPeriodicKernel`, `ARDLinearKernel` | More kernels with ARD weights. | Rasmussen and Williams (2006) |
 | `SumKernel`, `ProductKernel` | The sum and the product of kernels. | - |
 | `GPPrior` | A GP prior on the latent space for sequence data. The default is `StandardNormalPrior`. | Damianou et al. (2016), section 3.3.2 |
+| `SVIDPGPLVM`, `SVIBayesianGPLVM`, `SVIMRD` | The three models with stochastic variational inference. They take each kernel and each likelihood. | Lalchand et al. (2022) |
+| `GaussianLikelihood`, `StudentTLikelihood`, `LaplaceLikelihood` | Likelihoods for real values. | - |
+| `PoissonLikelihood`, `BernoulliLikelihood`, `BetaLikelihood`, `MixedLikelihood` | Likelihoods for counts, binary values, proportions, and data with more than one type. | - |
 | `fit` | The training loop. It does Adam steps, then L-BFGS steps. | - |
 | `fit_restarts` | Trains one model for each seed and keeps the model with the lowest final objective. | - |
 
@@ -154,6 +230,7 @@ hyperparameters. Each command shows its options with `--help`.
 | `uv run python -m experiments.frey_faces --variant split` | Missing half faces: MRD and DP-GP-LVM | `data/frey_faces` |
 | `uv run python -m experiments.colposcopy` | Structure of colposcopy assessments | `data/colposcopy` |
 | `uv run python -m experiments.skin_cancer --labels 0 1` | Multi-view skin cancer images | `data/skin_cancer_mnist` |
+| `uv run python -m experiments.cmu_dynamics` | Interpolation and forecast of a walk with the time prior | `data/cmu_mocap` |
 
 Each experiment writes its results to `results/<experiment>/`. Each result has an `.npz` file, a `.json` file with
 the settings, and PDF plots. If a result exists, the experiment does not run it again. To run it again, add `--force`.
@@ -179,6 +256,35 @@ uv run python -m experiments.synthetic --variant two-func --restarts 5 --model-s
 `train_opt_time` is the total training time of all restarts, in seconds. `train_history` is the objective history of
 the best model.
 
+Each experiment also takes the options of the extensions:
+
+| Option | Values | Effect |
+|---|---|---|
+| `--inference` | `collapsed` (default), `svi` | `svi` uses the SVI model for each model of the experiment. |
+| `--kernel` | `rbf` (default), `matern52`, `matern32`, `matern12`, `rational-quadratic`, `periodic`, `linear`, `rbf+linear` | The kernel on the latent space. Kernels other than `rbf` need `--inference svi`. |
+| `--likelihood` | `gaussian` (default), `student-t`, `laplace`, `poisson`, `bernoulli`, `beta` | The likelihood. Likelihoods other than `gaussian` need `--inference svi`. The experiment does not standardise the data for `poisson`, `bernoulli`, and `beta`. |
+| `--latent-prior` | `standard` (default), `time` | `time` puts a GP prior on the latent space. The row number is the time. `--time-kernel` sets its kernel. |
+| `--sampling`, `--samples`, `--batch-size` | - | The samples and the mini-batches of the SVI models. |
+
+A run with options that are not the defaults writes to a directory with the name of the options, for example
+`results/synthetic/svi-matern52/`. Thus, it does not replace the results of the paper settings. These commands are
+examples:
+
+```bash
+uv run python -m experiments.synthetic --variant two-func --inference svi --kernel matern52 --restarts 3
+```
+
+```bash
+uv run python -m experiments.synthetic --inference svi --observation poisson --likelihood poisson --restarts 3
+```
+
+```bash
+uv run python -m experiments.frey_faces --variant split --inference svi --likelihood beta
+```
+
+`--observation` of `experiments.synthetic` makes counts or binary values from the latent functions of the synthetic
+data.
+
 The PoseTrack (paper Fig. 4 and Table 1) and horse (paper Fig. 5) experiments are not available. Their data is not
 in this repository. `data/README.md` gives the source and the licence of each data set.
 
@@ -199,7 +305,18 @@ in this repository. `data/README.md` gives the source and the licence of each da
   | `skin_cancer`, seven conditions  | 65 | 448 | 35 | 15 | 22.0 GB     | 0.96 GB      |
 
   If the memory is not sufficient, use a smaller `--inducing-points` value.
-- The default optimiser of `fit`, `fit_restarts`, and the prediction methods is `optimiser="adam-lbfgs"`.
+- An SVI model makes a tensor with the size `K x M x S x n` for each evaluation of the objective. `K` is the number
+  of kernels: `D` for `SVIDPGPLVM`, 1 for `SVIBayesianGPLVM`, and 1 for each view of `SVIMRD`. `S` is `num_samples`
+  and `n` is the number of rows, or `batch_size`. If the memory is not sufficient, use a smaller `num_samples` or a
+  `batch_size`.
+- The lower bound of an SVI model is never above the lower bound of the collapsed model with the same parameters.
+  For the RBF kernel and Gaussian noise, the two bounds agree if q(U) is optimal. Use the collapsed models for this
+  combination, and the SVI models for the others.
+- A `GPPrior` adds a cost of `O(Q N³)` to each evaluation, for `N` rows.
+- The default optimiser of `fit`, `fit_restarts`, and the prediction methods is `optimiser="adam-lbfgs"`. For an SVI
+  model with `sampling="fresh"`, the default of `fit` and `fit_restarts` is `optimiser="adam"`.
+- On the two-function synthetic data, an SVI model with fixed samples and `"adam-lbfgs"` gets a much lower objective
+  in 1500 steps than the same model with new samples and Adam. `CHANGELOG.md` gives the values.
   `torch.optim.Adam` does the first fifth of the steps. Then `torch.optim.LBFGS` with a strong Wolfe line search does
   the other steps. L-BFGS stops when the objective converges, so the history can be shorter than `iterations`.
   `learning_rate` is the Adam learning rate. L-BFGS alone can stop on a plateau near the initial values, so the Adam
@@ -265,6 +382,7 @@ experiments/      The experiments of the paper and the thesis.
 data/             The data sets of the experiments.
 tests/            The tests and the legacy golden values.
 scripts/          The golden-value generator and the CI scripts.
+docs/             The review of the legacy behaviours, and the derivation of the SVI lower bound.
 ```
 
 ## Changes from the legacy version

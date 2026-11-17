@@ -58,6 +58,50 @@ This file records the notable changes of each version. The format follows
     likelihood. `predictive_log_density` gives the log predictive density of held-out values.
   - For an RBF kernel and Gaussian noise, the prediction with the best q(U) is the prediction of `BayesianGPLVM`.
     The tests check this.
+- Experiment options for the extensions: `--inference`, `--kernel`, `--likelihood`, `--latent-prior`,
+  `--time-kernel`, `--sampling`, `--samples`, and `--batch-size`. With `--inference svi`, each experiment uses the SVI
+  model for each of its models. A run with options that are not the defaults writes to a directory with the name of
+  the options, for example `results/synthetic/svi-matern52/`. `experiments._common.make_model` makes the models.
+- The option `--observation` of `experiments.synthetic`: counts or binary values from the latent functions of the
+  synthetic data.
+- `experiments.cmu_dynamics`: interpolation and forecast of a CMU walk with the time prior.
+- [docs/svi-bound.md](docs/svi-bound.md): the SVI lower bound, its relation to the collapsed bound, and the GP prior.
+- These are the results of `experiments.synthetic --variant two-func --restarts 3 --model-seed 0` (paper Fig. 3:
+  `N = 100`, `D = 30`, 1500 steps). The objective of an SVI model is the result of `evaluate()`.
+
+  | Model | Options | Best objective | DP groups of the best restart |
+  |---|---|---|---|
+  | DP-GP-LVM | Collapsed | 1546.5 | The two true groups |
+  | DP-GP-LVM | `--inference svi` | 1718.3 | The two true groups |
+  | DP-GP-LVM | `--inference svi --kernel rational-quadratic` | 2038.4 | The two true groups |
+  | DP-GP-LVM | `--inference svi --kernel matern52` | 2151.2 | The two true groups |
+  | DP-GP-LVM | `--inference svi --samples 16` | 1793.2 | One group |
+  | DP-GP-LVM | `--inference svi --sampling fresh` | 3020.4 | 29 of the 30 dimensions are correct |
+  | DP-GP-LVM | `--inference svi --sampling fresh --iterations 6000` | 2939.1 | 29 of the 30 dimensions are correct |
+  | DP-GP-LVM | `--inference svi --sampling fresh --kernel matern52` | 3831.0 | One group |
+  | Bayesian GP-LVM | Collapsed | 3018.5 | - |
+  | Bayesian GP-LVM | `--inference svi` | 3105.6 | - |
+  | Bayesian GP-LVM | `--inference svi --sampling fresh` | 3000.2 | - |
+
+  - With fixed samples and `"adam-lbfgs"`, the SVI model is near the collapsed model, and it finds the two groups
+    with each of the three kernels. Thus, fixed samples are the default.
+  - With new samples and Adam, the objective is far from the objective with fixed samples, also after 6000 steps.
+  - The result depends on the seed for each model. For the collapsed DP-GP-LVM, the objectives of the three
+    restarts are 3635.6, 3610.5, and 1546.5. For the SVI model, they are 1718.3, 2248.2, and 2230.8.
+- These are the results of `experiments.cmu_dynamics` (CMU subject 7, sequence 1, each fourth frame: 63 training
+  frames and 56 joint angles). The models predict 8 frames in a gap and the 8 last frames from their times only.
+  The values are the root mean squared errors of the standardised joint angles.
+
+  | Prediction | Gap | Last frames |
+  |---|---|---|
+  | DP-GP-LVM, collapsed, time prior | 0.590 | 0.881 |
+  | Bayesian GP-LVM, collapsed, time prior | 0.660 | 0.883 |
+  | DP-GP-LVM, `--inference svi --kernel matern52`, time prior | 0.609 | 0.974 |
+  | Bayesian GP-LVM, `--inference svi --kernel matern52`, time prior | 0.613 | 0.922 |
+  | Linear interpolation of the adjacent training frames | 0.787 | 1.110 |
+  | Mean of the training data | 1.085 | 0.976 |
+
+  The time prior helps the interpolation. The forecast of 8 frames is only a little better than the mean.
 - `SVIDPGPLVM`: the DP-GP-LVM with stochastic variational inference. The DP atoms hold the hyperparameters of the
   kernel family and of the likelihood. Each observed dimension uses the expected hyperparameters of its group
   assignments, as in `DPGPLVM` with `expectation="plug_in"` (paper eqs. 22 and 23). The DP terms are the terms of
@@ -67,7 +111,7 @@ This file records the notable changes of each version. The format follows
 - The three SVI models have the same variational family for q(U), so an experiment can compare DP-GP-LVM with its
   two special cases under one kernel, one likelihood, and one inference. `SVIDPGPLVM` with `truncation_level=1` and
   `SVIMRD` with one view give the bound of `SVIBayesianGPLVM`.
-- On the synthetic data with two groups, `SVIDPGPLVM` with 3 restarts finds the two groups with the RBF kernel
+- On the synthetic test data with two groups, `SVIDPGPLVM` with 3 restarts finds the two groups with the RBF kernel
   and with the Matérn 5/2 kernel. It also finds them from counts (`PoissonLikelihood`) and from binary values
   (`BernoulliLikelihood`) of the same latent functions. These are the measured limits for data that is not Gaussian:
   - A count or a binary value has less information than a real value with small noise. The data must be larger.
@@ -86,8 +130,10 @@ This file records the notable changes of each version. The format follows
   lower bound of Lalchand, Ravuri, and Lawrence (AISTATS 2022). The bound keeps q(U) as parameters and uses samples
   of the latent points. Thus, the model works with each kernel family (`kernel=`), each likelihood (`likelihood=`),
   each prior on the latent space (`latent_prior=`), mini-batches (`batch_size=`), and missing values (`NaN`).
-  - `sampling="fresh"` draws new samples for each evaluation of the objective. This is the default.
-  - `sampling="fixed"` keeps the samples. The objective is then deterministic, so `"adam-lbfgs"` works.
+  - `sampling="fixed"` keeps the samples of the latent points. The objective is then deterministic, so
+    `"adam-lbfgs"` works. This is the default.
+  - `sampling="fresh"` draws new samples for each evaluation of the objective. A mini-batch needs it. It is the
+    default with `batch_size`.
   - `evaluate()` gives a deterministic estimate of the objective with many samples.
   - For an RBF kernel and Gaussian noise, the bound with the best q(U) is the collapsed bound of `BayesianGPLVM`.
     The tests use this fact.
@@ -113,6 +159,8 @@ This file records the notable changes of each version. The format follows
   the noise precision in its `noise_precision` property, as before. The results of the models do not change.
 - `covariance_matrix` and `covariance_diag` have no `include_noise` argument. To get the covariance of noisy data,
   add the noise variance to the diagonal.
+- The experiments do not have `"adam-lbfgs"` as the default of `--optimiser`. If the option is not set, `fit`
+  selects the optimiser. The results of the default runs do not change.
 - The default of the `optimiser` argument of `fit` and `fit_restarts` is `None`. It selects `"adam-lbfgs"`, as
   before, or `"adam"` for a model with a stochastic objective. `fit` raises an error if a stochastic model gets
   `"adam-lbfgs"`.

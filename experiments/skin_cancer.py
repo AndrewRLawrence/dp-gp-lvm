@@ -14,19 +14,21 @@ With six or seven conditions (D = 384 or 448), the legacy settings need approxim
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import partial
 
 import numpy as np
 
-from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
 from experiments._common import (
     Defaults,
     Model,
     ResultStore,
+    Settings,
+    make_model,
     parser,
     save_figure,
+    scale_data,
     settings,
-    standardise,
     train,
 )
 from experiments._data import skin_cancer_conditions, skin_cancer_label_sets
@@ -35,13 +37,13 @@ DEFAULTS = Defaults(iterations=5000, learning_rate=0.01, latent_dims=15, inducin
 PIXELS = 64
 
 
-def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+def builders(y: np.ndarray, run: Settings) -> dict[str, Callable[[int], Model]]:
     """Return the models of this experiment. Each builder takes the seed of the initial values."""
     views = [y[:, i : i + PIXELS] for i in range(0, y.shape[1], PIXELS)]
     return {
-        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
-        "mrd": lambda seed: MRD(views, q, m, seed=seed),
-        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, seed=seed),
+        "bgplvm": partial(make_model, "bgplvm", y, run),
+        "mrd": partial(make_model, "mrd", views, run),
+        "dp_gp_lvm": partial(make_model, "dp_gp_lvm", y, run),
     }
 
 
@@ -59,10 +61,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     label_sets = skin_cancer_label_sets(args.conditions) if args.all else [tuple(sorted(args.labels))]
     for labels in label_sets:
         images = skin_cancer_conditions(labels, args.num_samples)
-        (y,) = standardise(images[: args.num_samples])
+        (y,) = scale_data(run, images[: args.num_samples])
         name = "_".join(str(label) for label in labels)
         print(f"Skin cancer MNIST, conditions {labels}: N={y.shape[0]}, D={y.shape[1]}.")
-        available = builders(y, run.latent_dims, run.inducing_points, run.truncation_level)
+        available = builders(y, run)
         for label in args.models:
             result = f"{label}_skin_cancer_mnist_{name}"
             if store.skip(result):

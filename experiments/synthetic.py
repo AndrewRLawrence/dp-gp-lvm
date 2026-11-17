@@ -17,14 +17,16 @@ from functools import partial
 import numpy as np
 import torch
 
-from dp_gp_lvm import DPGPLVM, ARDRBFKernel, BayesianGPLVM
+from dp_gp_lvm import ARDRBFKernel
 from dp_gp_lvm._numerics import JITTER
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
 from experiments._common import (
     Defaults,
+    Model,
     ResultStore,
     Settings,
     block_permute,
+    make_model,
     parser,
     save_figure,
     settings,
@@ -36,6 +38,12 @@ from experiments._common import (
 )
 
 NUM_INPUT_DIMS = 5
+
+#: The mean of the log rate of the counts for ``--observation poisson``. The counts have a mean of approximately 30.
+COUNT_LOG_RATE = 3.0
+
+#: The slope of the logit for ``--observation bernoulli``.
+BINARY_SLOPE = 4.0
 
 
 @dataclass(frozen=True)
@@ -70,8 +78,12 @@ FOUR_FUNCTION_ARD = (
 )
 
 
-def make_data(variant: Variant, num_samples: int = 100) -> tuple[np.ndarray, np.ndarray]:
+def make_data(variant: Variant, num_samples: int = 100, observation: str = "gaussian") -> tuple[np.ndarray, np.ndarray]:
     """Sample standardised data from the GP functions of a variant, with the legacy random stream.
+
+    With ``observation="poisson"``, the data are counts with the log rate ``COUNT_LOG_RATE + y``. With
+    ``observation="bernoulli"``, the data are binary values with the logit ``BINARY_SLOPE * y``. ``y`` is the
+    standardised data.
 
     Returns
     -------
@@ -94,6 +106,10 @@ def make_data(variant: Variant, num_samples: int = 100) -> tuple[np.ndarray, np.
         columns.append(rng.multivariate_normal(np.zeros(num_samples), covariance.numpy(), size=dims_per_function).T)
         truth.extend([index] * dims_per_function)
     (y,) = standardise(np.hstack(columns))
+    if observation == "poisson":
+        y = rng.poisson(np.exp(COUNT_LOG_RATE + y)).astype(np.float64)
+    elif observation == "bernoulli":
+        y = (rng.random_sample(y.shape) < 1.0 / (1.0 + np.exp(-BINARY_SLOPE * y))).astype(np.float64)
     return y, np.asarray(truth)
 
 
@@ -116,11 +132,9 @@ def run_structure(name: str, y: np.ndarray, truth: np.ndarray, run: Settings, st
             )
 
 
-def build_model(label: str, y: np.ndarray, run: Settings, seed: int) -> BayesianGPLVM | DPGPLVM:
+def build_model(label: str, y: np.ndarray, run: Settings, seed: int) -> Model:
     """Return a new Bayesian GP-LVM or DP-GP-LVM with the run settings."""
-    if label == "bgplvm":
-        return BayesianGPLVM(y, run.latent_dims, run.inducing_points, seed=seed)
-    return DPGPLVM(y, run.latent_dims, run.inducing_points, run.truncation_level, seed=seed)
+    return make_model("bgplvm" if label == "bgplvm" else "dp_gp_lvm", y, run, seed)
 
 
 def run_missing(
@@ -163,10 +177,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--seeds", type=int, nargs="+", default=list(range(10, 15)), help="Seeds for --missing.")
     p.add_argument("--percent-samples", type=float, nargs="+", default=[0.8, 0.9], help="Observed samples.")
     p.add_argument("--percent-dims", type=float, nargs="+", default=[0.7, 0.8, 0.9], help="Observed dimensions.")
+    p.add_argument(
+        "--observation",
+        choices=["gaussian", "poisson", "bernoulli"],
+        default="gaussian",
+        help="The type of the data: real values, counts, or binary values of the same latent functions.",
+    )
     args = p.parse_args(argv)
+    if args.observation != "gaussian" and (args.inference, args.likelihood) != ("svi", args.observation):
+        p.error(f"--observation {args.observation} needs --inference svi --likelihood {args.observation}.")
     run = settings(args)
     store = ResultStore(run)
-    y, truth = make_data(variant, args.num_samples)
+    y, truth = make_data(variant, args.num_samples, args.observation)
     name = args.variant.replace("-", "_")
     print(f"Synthetic data '{args.variant}': N={y.shape[0]}, D={y.shape[1]}, functions={int(truth.max()) + 1}.")
     if args.missing:

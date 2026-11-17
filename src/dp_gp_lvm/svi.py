@@ -63,8 +63,10 @@ from dp_gp_lvm.prediction import (
 
 #: How a model draws the samples of the latent points.
 #:
-#: - ``"fresh"``: new samples for each evaluation of the objective. The objective is stochastic and unbiased.
 #: - ``"fixed"``: the same samples for each evaluation. The objective is deterministic, so L-BFGS can minimise it.
+#:   This is the default without a mini-batch.
+#: - ``"fresh"``: new samples for each evaluation of the objective. The objective is stochastic and unbiased.
+#:   A mini-batch needs it.
 type Sampling = Literal["fresh", "fixed"]
 
 #: The default number of samples of each latent point for one evaluation of the objective.
@@ -192,10 +194,11 @@ class SVIModel(LatentVariableModel):
     batch_size : int, optional
         The number of training points in each mini-batch. The default uses all training points. A mini-batch needs
         ``sampling="fresh"``.
-    sampling : {"fresh", "fixed"}, default "fresh"
-        ``"fresh"`` draws new samples for each evaluation of the objective. Use it with an Adam optimiser.
+    sampling : {"fixed", "fresh"}, optional
         ``"fixed"`` keeps the samples, so the objective is deterministic. L-BFGS and the comparison of restarts then
         work as for the collapsed models. With a small ``num_samples``, the optimiser can fit the fixed samples.
+        ``"fresh"`` draws new samples for each evaluation of the objective. Use it with an Adam optimiser.
+        The default is ``"fixed"``, or ``"fresh"`` with a mini-batch.
     seed : int, optional
         The seed of the random generators for the initial values and for the samples.
     dtype : torch.dtype, default torch.float64
@@ -221,7 +224,7 @@ class SVIModel(LatentVariableModel):
         latent_prior: LatentPrior | None = None,
         num_samples: int = DEFAULT_SAMPLES,
         batch_size: int | None = None,
-        sampling: Sampling = "fresh",
+        sampling: Sampling | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
@@ -233,6 +236,8 @@ class SVIModel(LatentVariableModel):
         if num_inducing_points > num_data:
             msg = "The number of inducing points must not be more than the number of observations."
             raise ValueError(msg)
+        if sampling is None:
+            sampling = "fixed" if batch_size is None or batch_size == num_data else "fresh"
         if sampling not in get_args(Sampling.__value__):
             msg = f"The sampling must be 'fresh' or 'fixed'. The value is {sampling!r}."
             raise ValueError(msg)
@@ -841,9 +846,9 @@ class SVIBayesianGPLVM(SingleViewSVIModel):
         The number of samples of each latent point for one evaluation of the objective.
     batch_size : int, optional
         The number of training points in each mini-batch. The default uses all training points.
-    sampling : {"fresh", "fixed"}, default "fresh"
-        ``"fresh"`` draws new samples for each evaluation of the objective. ``"fixed"`` keeps the samples, so the
-        objective is deterministic.
+    sampling : {"fixed", "fresh"}, optional
+        ``"fixed"`` keeps the samples, so the objective is deterministic. ``"fresh"`` draws new samples for each
+        evaluation of the objective. The default is ``"fixed"``, or ``"fresh"`` with a mini-batch.
     seed : int, optional
         The seed of the random generators for the initial values and for the samples.
     dtype : torch.dtype, default torch.float64
@@ -866,7 +871,7 @@ class SVIBayesianGPLVM(SingleViewSVIModel):
         latent_prior: LatentPrior | None = None,
         num_samples: int = DEFAULT_SAMPLES,
         batch_size: int | None = None,
-        sampling: Sampling = "fresh",
+        sampling: Sampling | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
@@ -973,9 +978,9 @@ class SVIMRD(SVIModel):
         The number of samples of each latent point for one evaluation of the objective.
     batch_size : int, optional
         The number of training points in each mini-batch. The default uses all training points.
-    sampling : {"fresh", "fixed"}, default "fresh"
-        ``"fresh"`` draws new samples for each evaluation of the objective. ``"fixed"`` keeps the samples, so the
-        objective is deterministic.
+    sampling : {"fixed", "fresh"}, optional
+        ``"fixed"`` keeps the samples, so the objective is deterministic. ``"fresh"`` draws new samples for each
+        evaluation of the objective. The default is ``"fixed"``, or ``"fresh"`` with a mini-batch.
     seed : int, optional
         The seed of the random generators for the initial values and for the samples.
     dtype : torch.dtype, default torch.float64
@@ -995,7 +1000,7 @@ class SVIMRD(SVIModel):
         latent_prior: LatentPrior | None = None,
         num_samples: int = DEFAULT_SAMPLES,
         batch_size: int | None = None,
-        sampling: Sampling = "fresh",
+        sampling: Sampling | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,
@@ -1307,9 +1312,9 @@ class SVIDPGPLVM(SingleViewSVIModel):
         The number of samples of each latent point for one evaluation of the objective.
     batch_size : int, optional
         The number of training points in each mini-batch. The default uses all training points.
-    sampling : {"fresh", "fixed"}, default "fresh"
-        ``"fresh"`` draws new samples for each evaluation of the objective. ``"fixed"`` keeps the samples, so the
-        objective is deterministic.
+    sampling : {"fixed", "fresh"}, optional
+        ``"fixed"`` keeps the samples, so the objective is deterministic. ``"fresh"`` draws new samples for each
+        evaluation of the objective. The default is ``"fixed"``, or ``"fresh"`` with a mini-batch.
     seed : int, optional
         The seed of the random generators for the initial values and for the samples.
     dtype : torch.dtype, default torch.float64
@@ -1332,7 +1337,7 @@ class SVIDPGPLVM(SingleViewSVIModel):
         latent_prior: LatentPrior | None = None,
         num_samples: int = DEFAULT_SAMPLES,
         batch_size: int | None = None,
-        sampling: Sampling = "fresh",
+        sampling: Sampling | None = None,
         seed: int | None = None,
         dtype: torch.dtype = DTYPE,
         device: torch.device | str | None = None,

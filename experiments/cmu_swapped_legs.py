@@ -9,19 +9,21 @@ Run ``uv run python -m experiments.cmu_swapped_legs --help`` for the options.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import partial
 
 import numpy as np
 
-from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM
 from dp_gp_lvm.plotting import plot_ard_weights, plot_assignments
 from experiments._common import (
     Defaults,
     Model,
     ResultStore,
+    Settings,
+    make_model,
     parser,
     save_figure,
+    scale_data,
     settings,
-    standardise,
     train,
 )
 from experiments._data import cmu_swapped_legs
@@ -30,18 +32,18 @@ DEFAULTS = Defaults(iterations=5000, learning_rate=0.01, latent_dims=20, inducin
 DIMS_PER_WALK = 93
 
 
-def builders(y: np.ndarray, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+def builders(y: np.ndarray, run: Settings) -> dict[str, Callable[[int], Model]]:
     """Return the legacy model variants of this experiment. Each builder takes the seed of the initial values."""
     num_dims = y.shape[1]
     walks = [y[:, i : i + DIMS_PER_WALK] for i in range(0, num_dims, DIMS_PER_WALK)]
     joints = [y[:, i : i + 3] for i in range(0, num_dims, 3)]
     return {
         # mask_size=3 keeps the three coordinates of each joint in one group.
-        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, mask_size=3, seed=seed),
-        "dp_gp_lvm_mask_93": lambda seed: DPGPLVM(y, q, m, t, mask_size=DIMS_PER_WALK, seed=seed),
-        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
-        "mrd": lambda seed: MRD(walks, q, m, seed=seed),
-        "mrd_fully_independent": lambda seed: MRD(joints, q, m, seed=seed),
+        "dp_gp_lvm": partial(make_model, "dp_gp_lvm", y, run, mask_size=3),
+        "dp_gp_lvm_mask_93": partial(make_model, "dp_gp_lvm", y, run, mask_size=DIMS_PER_WALK),
+        "bgplvm": partial(make_model, "bgplvm", y, run),
+        "mrd": partial(make_model, "mrd", walks, run),
+        "mrd_fully_independent": partial(make_model, "mrd", joints, run),
     }
 
 
@@ -59,9 +61,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = settings(args)
     store = ResultStore(run)
     original = cmu_swapped_legs()
-    (y,) = standardise(original[:: args.frame_step])
+    (y,) = scale_data(run, original[:: args.frame_step])
     print(f"CMU subject 35, normal and swapped walks: N={y.shape[0]}, D={y.shape[1]}.")
-    available = builders(y, run.latent_dims, run.inducing_points, run.truncation_level)
+    available = builders(y, run)
     for label in args.models:
         result = f"{label}_cmu_walking_normal_swapped"
         if store.skip(result):

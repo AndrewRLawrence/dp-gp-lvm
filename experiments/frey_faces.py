@@ -14,14 +14,16 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 
-from dp_gp_lvm import DPGPLVM, MRD, BayesianGPLVM
 from experiments._common import (
     Defaults,
     Model,
     ResultStore,
+    Settings,
+    make_model,
     min_max_scale,
     parser,
     settings,
@@ -60,15 +62,27 @@ VARIANTS = {
 
 
 def prepare(
-    faces: np.ndarray, variant: Variant, seed: int, num_train: int, num_test: int, percent_missing: float
+    faces: np.ndarray,
+    variant: Variant,
+    seed: int,
+    num_train: int,
+    num_test: int,
+    percent_missing: float,
+    *,
+    raw: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sample, scale, and split the faces with the legacy random stream."""
+    """Sample, scale, and split the faces with the legacy random stream.
+
+    With ``raw``, the pixel values stay in the unit interval, for the beta likelihood.
+    """
     rng = np.random.RandomState(seed)  # The legacy random stream.
     indices = rng.choice(faces.shape[0], size=num_train + num_test, replace=False)
     train_indices = indices[:num_train]
     test_indices = train_indices[:num_test] if variant.test_on_training else indices[num_train:]
-    scale = min_max_scale if variant.min_max else standardise
-    y_train, y_test = scale(faces[train_indices], faces[test_indices])
+    y_train, y_test = faces[train_indices], faces[test_indices]
+    if not raw:
+        scale = min_max_scale if variant.min_max else standardise
+        y_train, y_test = scale(y_train, y_test)
     if variant.permute_pixels:
         columns = rng.permutation(faces.shape[1])
         y_train, y_test = y_train[:, columns], y_test[:, columns]
@@ -76,12 +90,12 @@ def prepare(
     return y_train, y_test[:, :num_observed], y_test[:, num_observed:]
 
 
-def builders(y: np.ndarray, num_observed: int, q: int, m: int, t: int) -> dict[str, Callable[[int], Model]]:
+def builders(y: np.ndarray, num_observed: int, run: Settings) -> dict[str, Callable[[int], Model]]:
     """Return the models of this experiment. Each builder takes the seed of the initial values."""
     return {
-        "bgplvm": lambda seed: BayesianGPLVM(y, q, m, seed=seed),
-        "dp_gp_lvm": lambda seed: DPGPLVM(y, q, m, t, seed=seed),
-        "mrd": lambda seed: MRD([y[:, :num_observed], y[:, num_observed:]], q, m, seed=seed),
+        "bgplvm": partial(make_model, "bgplvm", y, run),
+        "dp_gp_lvm": partial(make_model, "dp_gp_lvm", y, run),
+        "mrd": partial(make_model, "mrd", [y[:, :num_observed], y[:, num_observed:]], run),
     }
 
 
@@ -105,10 +119,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     scores: dict[str, list[float]] = {}
     for seed in args.seeds:
         y_train, observed, unobserved = prepare(
-            faces, variant, seed, args.num_train, args.num_test, args.percent_missing
+            faces, variant, seed, args.num_train, args.num_test, args.percent_missing, raw=run.raw_data
         )
         print(f"Frey faces '{args.variant}', seed {seed}: N={y_train.shape[0]}, observed={observed.shape[1]}.")
-        available = builders(y_train, observed.shape[1], run.latent_dims, run.inducing_points, run.truncation_level)
+        available = builders(y_train, observed.shape[1], run)
         for label in args.models:
             result = f"{label}_frey_faces_{args.variant}_seed{seed}"
             if not store.skip(result):

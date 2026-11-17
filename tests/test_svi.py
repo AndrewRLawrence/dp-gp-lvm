@@ -220,9 +220,19 @@ class TestSampling:
         with torch.no_grad():
             assert float(other.objective()) != float(model.objective())
 
+    def test_default_sampling(self, y: np.ndarray) -> None:
+        """The default is fixed samples. A mini-batch needs new samples for each evaluation."""
+        model = SVIBayesianGPLVM(y, Q, M, seed=0)
+        assert model.sampling == "fixed"
+        assert not model.stochastic
+        batches = SVIBayesianGPLVM(y, Q, M, batch_size=5, seed=0)
+        assert batches.sampling == "fresh"
+        assert batches.stochastic
+        assert SVIBayesianGPLVM(y, Q, M, batch_size=N, seed=0).sampling == "fixed"
+
     def test_initial_objective_does_not_use_the_samples(self, y: np.ndarray) -> None:
         """The initial q(U) is the prior. The function values then do not depend on the latent points."""
-        model = SVIBayesianGPLVM(y, Q, M, seed=0)
+        model = SVIBayesianGPLVM(y, Q, M, sampling="fresh", seed=0)
         with torch.no_grad():
             torch.testing.assert_close(model.objective(), model.objective())
             torch.testing.assert_close(whitened_kl(model.u_mean, model.u_tril), torch.zeros((), dtype=torch.float64))
@@ -235,11 +245,11 @@ class TestSampling:
         torch.testing.assert_close(copy.objective(), model.objective(), rtol=0.0, atol=0.0)
 
     def test_fresh_samples_give_a_stochastic_objective(self, y: np.ndarray, rng: np.random.Generator) -> None:
-        model = SVIBayesianGPLVM(y, Q, M, seed=0)
+        model = SVIBayesianGPLVM(y, Q, M, sampling="fresh", seed=0)
         random_inducing_distribution(model, rng)
         assert model.stochastic
         assert model.base_samples is None
-        again = SVIBayesianGPLVM(y, Q, M, seed=0)
+        again = SVIBayesianGPLVM(y, Q, M, sampling="fresh", seed=0)
         again.load_state_dict(model.state_dict())
         with torch.no_grad():
             first, second = float(model.objective()), float(model.objective())
@@ -356,7 +366,7 @@ class TestGradients:
 
 class TestTraining:
     def test_stochastic_model_trains_with_adam_by_default(self, y: np.ndarray) -> None:
-        model = SVIBayesianGPLVM(y, Q, M, seed=0)
+        model = SVIBayesianGPLVM(y, Q, M, sampling="fresh", seed=0)
         with torch.no_grad():
             before = float(model.evaluate())
         history = fit(model, 60, 0.05)
@@ -365,12 +375,12 @@ class TestTraining:
             assert float(model.evaluate()) < before
 
     def test_stochastic_model_with_lbfgs_raises(self, y: np.ndarray) -> None:
-        model = SVIBayesianGPLVM(y, Q, M, seed=0)
+        model = SVIBayesianGPLVM(y, Q, M, sampling="fresh", seed=0)
         with pytest.raises(ValueError, match="stochastic objective"):
             fit(model, 5, optimiser="adam-lbfgs")
 
     def test_fixed_samples_train_with_adam_and_lbfgs(self, y: np.ndarray) -> None:
-        model = SVIBayesianGPLVM(y, Q, M, sampling="fixed", seed=0)
+        model = SVIBayesianGPLVM(y, Q, M, seed=0)
         history = fit(model, 40, 0.05)
         assert history[-1] < history[0]
         assert np.all(np.diff(history[10:]) <= 1e-9)  # The L-BFGS steps do not increase the objective.
