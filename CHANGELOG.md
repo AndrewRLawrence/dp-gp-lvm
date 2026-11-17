@@ -17,6 +17,15 @@ This file records the notable changes of each version. The format follows
 - The experiment options `--restarts N` and `--model-seed`. The defaults train one model with the legacy seed, as
   before.
 - The keys `restart_seeds`, `restart_objectives`, and `best_seed` in the `.npz` and `.json` result files.
+- The release workflow `.github/workflows/release.yml`. It builds the sdist and the wheel one time, checks them, and
+  publishes the same files with Trusted Publishing and PEP 740 attestations. The repository has no PyPI token.
+  - Each push to `main` uploads the dev build `X.Y.Z.devN` to TestPyPI.
+  - A tag `vX.Y.Z` on `main` uploads the release to PyPI after an approval. Then the workflow makes a GitHub release
+    with the notes from this file.
+  - `CONTRIBUTING.md` gives the version rules and the release checklist.
+- `scripts/ci/release.py`: it gets the version to build, checks that `pyproject.toml`, `CHANGELOG.md`, and
+  `CITATION.cff` agree, checks the files in the wheel and the sdist, and writes the release notes.
+- The `release` dependency group, with twine.
 
 ### Changed
 
@@ -49,6 +58,10 @@ This file records the notable changes of each version. The format follows
 - `train_opt_time` in the experiment result files is the total training time of all restarts. With one restart, the
   value has the same meaning as before.
 - The experiments print the seed of each training run, and the final objective of each restart.
+- The README installs the package from PyPI. The git URL installs the development version.
+- The build of the distributions moves from `ci.yml` to `release.yml`. The check of the files now includes the sdist,
+  and the fast tests also run against the installed wheel.
+- Dependabot waits 7 days before it proposes a new version. Security updates do not wait.
 
 ### Fixed
 

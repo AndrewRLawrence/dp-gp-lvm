@@ -3,6 +3,7 @@
 [![CI](https://github.com/AndrewRLawrence/dp-gp-lvm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AndrewRLawrence/dp-gp-lvm/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/AndrewRLawrence/dp-gp-lvm/badges/tests.json)](https://github.com/AndrewRLawrence/dp-gp-lvm/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/AndrewRLawrence/dp-gp-lvm/graph/badge.svg)](https://codecov.io/gh/AndrewRLawrence/dp-gp-lvm)
+[![PyPI](https://img.shields.io/pypi/v/dp-gp-lvm)](https://pypi.org/project/dp-gp-lvm/)
 ![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14%20%7C%203.15-blue)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.6%2B-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
@@ -33,21 +34,27 @@ This repository contains the PyTorch implementation of the
 
 ## Installation
 
-The package needs Python 3.12, 3.13, 3.14, or 3.15. It is not on PyPI. Install it from GitHub.
+The package needs Python 3.12, 3.13, 3.14, or 3.15. Install it from [PyPI](https://pypi.org/project/dp-gp-lvm/).
 
 With pip:
 
 ```bash
-pip install "dp-gp-lvm[plot] @ git+https://github.com/AndrewRLawrence/dp-gp-lvm"
+pip install "dp-gp-lvm[plot]"
 ```
 
 With uv, in your own project:
 
 ```bash
-uv add "dp-gp-lvm[plot] @ git+https://github.com/AndrewRLawrence/dp-gp-lvm"
+uv add "dp-gp-lvm[plot]"
 ```
 
 The `plot` extra installs matplotlib for the plot functions. The models do not need it.
+
+To install the development version from the `main` branch, use the git URL:
+
+```bash
+pip install "dp-gp-lvm[plot] @ git+https://github.com/AndrewRLawrence/dp-gp-lvm"
+```
 
 ## Quick start
 
@@ -229,7 +236,8 @@ The test markers are:
 | `experiments` | Runs of each experiment with tiny settings. |
 
 The golden values are in `tests/fixtures/legacy_tf1`. To make them again, start Docker and run
-`./scripts/legacy_golden/run.sh`. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the writing style and the workflow.
+`./scripts/legacy_golden/run.sh`. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the writing style, the workflow, and
+the release steps.
 
 The repository has this layout:
 
