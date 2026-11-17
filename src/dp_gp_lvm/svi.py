@@ -16,15 +16,23 @@ This is the bound of Lalchand, Ravuri, and Lawrence, "Generalised GPLVM with Sto
 
 from __future__ import annotations
 
+import math
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Literal, get_args
 
 import numpy as np
 import torch
 from torch import nn
 
-from dp_gp_lvm._base import DEFAULT_INDUCING_POINTS, DEFAULT_LATENT_DIMS, LatentVariableModel, check_positive_int
+from dp_gp_lvm._base import (
+    DEFAULT_INDUCING_POINTS,
+    DEFAULT_LATENT_DIMS,
+    INIT_NOISE_SCALE,
+    LatentVariableModel,
+    check_positive_int,
+)
 from dp_gp_lvm._numerics import DTYPE, ArrayInput, as_numpy, inverse_softplus, positive
 from dp_gp_lvm._svi_bound import (
     function_moments,
@@ -37,8 +45,21 @@ from dp_gp_lvm._svi_bound import (
 from dp_gp_lvm.dirichlet_process import DEFAULT_ALPHA_PRIOR, DEFAULT_TRUNCATION_LEVEL, DirichletProcess
 from dp_gp_lvm.distributions import log_normal_log_pdf
 from dp_gp_lvm.kernels import ARDRBFKernel, Kernel, KernelFamily
-from dp_gp_lvm.latent_priors import LatentPrior
+from dp_gp_lvm.latent_priors import JointLatents, LatentPrior
 from dp_gp_lvm.likelihoods import GaussianLikelihood, Likelihood
+from dp_gp_lvm.optim import OptimiserName
+from dp_gp_lvm.prediction import (
+    InputPrediction,
+    LatentPrediction,
+    MissingDataBound,
+    MissingDataPrediction,
+    NewDataBound,
+    TestLatents,
+    ViewsInputPrediction,
+    ViewsMissingDataBound,
+    frozen,
+    optimise_test_latents,
+)
 
 #: How a model draws the samples of the latent points.
 #:
@@ -118,6 +139,34 @@ def log_normal_prior(values: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """
     terms = [log_normal_log_pdf(value).sum() for value in values.values()]
     return torch.stack(terms).sum() if terms else torch.zeros(())
+
+
+@dataclass(frozen=True)
+class TestFit:
+    """The result of the fit of q(X*) to test data with an SVI model.
+
+    Attributes
+    ----------
+    latent_mean : torch.Tensor
+        The marginal means of q(X*), with the shape ``(N*, Q)``.
+    latent_variance : torch.Tensor
+        The marginal variances of q(X*), with the shape ``(N*, Q)``.
+    lower_bound : torch.Tensor
+        The lower bound of the training data and the observed test data together, without the prior terms of the
+        hyperparameters.
+    test_log_likelihood : torch.Tensor
+        The lower bound above minus the lower bound of the training data. It approximates ``log p(Y* | Y)``.
+    history : list of float
+        The lower bound of the fit before each optimiser step.
+    """
+
+    __test__ = False  # This is not a pytest test class.
+
+    latent_mean: torch.Tensor
+    latent_variance: torch.Tensor
+    lower_bound: torch.Tensor
+    test_log_likelihood: torch.Tensor
+    history: list[float]
 
 
 class SVIModel(LatentVariableModel):
@@ -320,14 +369,51 @@ class SVIModel(LatentVariableModel):
         mean, variance, y = self.latent_mean, self.latent_variance, self.y_train
         if index is not None:
             mean, variance, y = mean[index], variance[index], y[index]
-        num_samples, num_points, _ = base_samples.shape
-        f_mean, f_variance = self.function_moments(sample_points(mean, variance, base_samples))
-        if self.bias is not None:
-            f_mean = f_mean + self.bias.unsqueeze(-1)
+        return self.data_term(y, mean, variance, base_samples) * (self.num_data / base_samples.shape[1])
+
+    def biased_function_moments(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the moments of :meth:`function_moments`, with the bias of each observed dimension in the mean.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The latent points, with the shape ``(P, Q)``.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The means and the variances of the function values plus the bias, each with the shape ``(D, P)``.
+        """
+        f_mean, f_variance = self.function_moments(x)
+        return (f_mean if self.bias is None else f_mean + self.bias.unsqueeze(-1)), f_variance
+
+    def data_term(
+        self, y: torch.Tensor, mean: torch.Tensor, variance: torch.Tensor, base_samples: torch.Tensor
+    ) -> torch.Tensor:
+        """Return a Monte Carlo estimate of the expected log-likelihood of some data at some latent points.
+
+        Parameters
+        ----------
+        y : torch.Tensor
+            The data, with the shape ``(n, D)``. ``NaN`` marks a missing value.
+        mean : torch.Tensor
+            The marginal means of the latent points, with the shape ``(n, Q)``.
+        variance : torch.Tensor
+            The marginal variances of the latent points, with the shape ``(n, Q)``.
+        base_samples : torch.Tensor
+            Standard normal samples, with the shape ``(S, n, Q)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The estimate of ``Σ_n Σ_d E[log p(y_nd | f_nd)]`` over the given points, as a scalar.
+        """
+        num_samples = base_samples.shape[0]
+        f_mean, f_variance = self.biased_function_moments(sample_points(mean, variance, base_samples))
         values = self.likelihood.expected_log_prob(
             y.T.repeat(1, num_samples), f_mean, f_variance, self.likelihood_hyperparameters
         )
-        return values.sum() * (self.num_data / (num_points * num_samples))
+        return values.sum() / num_samples
 
     def _bound(self, expected_log_likelihood: torch.Tensor) -> torch.Tensor:
         """Return the lower bound for a value of the expected log-likelihood."""
@@ -372,19 +458,363 @@ class SVIModel(LatentVariableModel):
         torch.Tensor
             The negative lower bound as a scalar.
         """
+        total = torch.zeros((), dtype=self._dtype, device=self._device)
+        for samples in self._evaluation_samples(num_samples, self.num_data):
+            total = total + samples.shape[0] * self.expected_log_likelihood(None, samples)
+        return -self._bound(total / num_samples)
+
+    def _evaluation_samples(self, num_samples: int, num_points: int) -> Iterator[torch.Tensor]:
+        """Yield the standard normal samples of an evaluation in chunks of not more than ``self.num_samples``.
+
+        The samples are always the same. The chunks keep the memory use of an evaluation as in training.
+        """
         generator = torch.Generator()
         generator.manual_seed(EVALUATION_SEED)
-        total = torch.zeros((), dtype=self._dtype, device=self._device)
         remaining = num_samples
         while remaining > 0:
             size = min(self.num_samples, remaining)
-            samples = self._standard_normal(size, self.num_data, generator)
-            total = total + size * self.expected_log_likelihood(None, samples)
+            yield self._standard_normal(size, num_points, generator)
             remaining -= size
-        return -self._bound(total / num_samples)
+
+    def predict_observations(
+        self, latent_mean: torch.Tensor, latent_variance: torch.Tensor, num_samples: int = EVALUATION_SAMPLES
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the predictive mean and variance of each observed dimension at latent points with uncertainty.
+
+        Each sample of a latent point gives a Gaussian function value, and the likelihood gives the moments of the
+        observed value. The result has the moments of the mixture over the samples.
+
+        Parameters
+        ----------
+        latent_mean : torch.Tensor
+            The marginal means of the latent points, with the shape ``(N*, Q)``.
+        latent_variance : torch.Tensor
+            The marginal variances of the latent points, with the shape ``(N*, Q)``.
+        num_samples : int, default 64
+            The number of samples of each latent point.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The predictive means and variances, each with the shape ``(N*, D)``.
+        """
+        num_points = latent_mean.shape[0]
+        hyperparameters = self.likelihood_hyperparameters
+        first = torch.zeros((self.num_dims, num_points), dtype=self._dtype, device=self._device)
+        second = torch.zeros_like(first)
+        for samples in self._evaluation_samples(num_samples, num_points):
+            f_mean, f_variance = self.biased_function_moments(sample_points(latent_mean, latent_variance, samples))
+            mean, variance = self.likelihood.predictive_moments(f_mean, f_variance, hyperparameters)
+            shape = (self.num_dims, samples.shape[0], num_points)
+            mean, variance = mean.expand(f_mean.shape).reshape(shape), variance.expand(f_mean.shape).reshape(shape)
+            first = first + mean.sum(dim=1)
+            second = second + (variance + mean**2).sum(dim=1)
+        mean = first / num_samples
+        return mean.T, (second / num_samples - mean**2).T
+
+    def predictive_log_density(
+        self,
+        y: ArrayInput,
+        latent_mean: torch.Tensor,
+        latent_variance: torch.Tensor,
+        num_samples: int = EVALUATION_SAMPLES,
+    ) -> torch.Tensor:
+        """Return the log predictive density of each value of some data at latent points with uncertainty.
+
+        Use this function to score held-out values, for each likelihood.
+
+        Parameters
+        ----------
+        y : array_like
+            The data, with the shape ``(N*, D)``. ``NaN`` marks a value without a score.
+        latent_mean : torch.Tensor
+            The marginal means of the latent points, with the shape ``(N*, Q)``.
+        latent_variance : torch.Tensor
+            The marginal variances of the latent points, with the shape ``(N*, Q)``.
+        num_samples : int, default 64
+            The number of samples of each latent point.
+
+        Returns
+        -------
+        torch.Tensor
+            The log predictive density of each value, with the shape ``(N*, D)``. It is zero for a ``NaN``.
+        """
+        data = self._tensor(y)
+        num_points = latent_mean.shape[0]
+        hyperparameters = self.likelihood_hyperparameters
+        parts = []
+        for samples in self._evaluation_samples(num_samples, num_points):
+            f_mean, f_variance = self.biased_function_moments(sample_points(latent_mean, latent_variance, samples))
+            values = self.likelihood.predictive_log_prob(
+                data.T.repeat(1, samples.shape[0]), f_mean, f_variance, hyperparameters
+            )
+            parts.append(values.reshape(self.num_dims, samples.shape[0], num_points))
+        return (torch.logsumexp(torch.cat(parts, dim=1), dim=1) - math.log(num_samples)).T
+
+    def initial_test_free_mean(self, y_test: torch.Tensor) -> torch.Tensor:
+        """Return initial free means for q(X*): the latent mean of the nearest training row, plus a little noise.
+
+        The distance between two rows is the mean squared difference of the values that the two rows have. With a
+        GP prior, the free means start at zero. The latent means are then the GP prediction at the test inputs.
+
+        Parameters
+        ----------
+        y_test : torch.Tensor
+            The test data, with the shape ``(N*, D)``. ``NaN`` marks a missing value.
+
+        Returns
+        -------
+        torch.Tensor
+            The initial free means, with the shape ``(N*, Q)``.
+        """
+        train, test = self.y_train.detach().cpu().numpy(), y_test.detach().cpu().numpy()
+        squared = (train[:, np.newaxis, :] - test[np.newaxis, :, :]) ** 2
+        observed = ~np.isnan(squared)
+        counts = observed.sum(axis=-1)
+        sums = np.where(observed, squared, 0.0).sum(axis=-1)
+        distances = np.where(counts > 0, sums / np.maximum(counts, 1), np.inf)
+        index = torch.as_tensor(np.argmin(distances, axis=0), device=self.x_mean.device)
+        noise = self._rng.normal(scale=INIT_NOISE_SCALE, size=(test.shape[0], self.num_latent_dims))
+        return self.latent_prior.initial_test_free_mean(self.latent_mean.detach()[index] + self._tensor(noise))
+
+    def _test_bound(
+        self,
+        y_test: torch.Tensor,
+        test_mean: torch.Tensor,
+        test_variance: torch.Tensor,
+        test_samples: torch.Tensor,
+        train_samples: torch.Tensor,
+        test_inputs: ArrayInput | None,
+        test_sequence_ids: ArrayInput | None,
+    ) -> tuple[torch.Tensor, JointLatents]:
+        """Return the terms of the lower bound that depend on q(X*), and q(X, X*).
+
+        q(U) is fixed, so the test data adds only its own expected log-likelihood. With a prior that couples the
+        training and the test points, the term of the training data changes too.
+        """
+        latents = self.joint_latents(test_mean, test_variance, test_inputs, test_sequence_ids)
+        bound = self.data_term(y_test, latents.test_mean, latents.test_variance, test_samples) - latents.kl
+        if latents.coupled:
+            bound = bound + self.data_term(self.y_train, latents.train_mean, latents.train_variance, train_samples)
+        return bound, latents
+
+    def fit_test_data(
+        self,
+        y_test: torch.Tensor,
+        *,
+        iterations: int,
+        learning_rate: float,
+        optimiser: OptimiserName,
+        num_samples: int | None,
+        test_inputs: ArrayInput | None,
+        test_sequence_ids: ArrayInput | None,
+    ) -> TestFit:
+        """Fit q(X*) to test data. The model parameters do not change.
+
+        The fit uses fixed samples, so its objective is deterministic and ``"adam-lbfgs"`` works.
+
+        Parameters
+        ----------
+        y_test : torch.Tensor
+            The test data, with the shape ``(N*, D)``. ``NaN`` marks a missing value.
+        iterations : int
+            The maximum number of optimiser steps.
+        learning_rate : float
+            The Adam learning rate.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        num_samples : int, optional
+            The number of samples of each latent point. The default is the number of the model.
+        test_inputs : array_like, optional
+            The inputs of the test points. Give them only if the prior is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        TestFit
+            The marginals of q(X*), the lower bound terms, and the history of the fit.
+        """
+        if torch.isnan(y_test).all():
+            msg = "The test data must have at least one observed value."
+            raise ValueError(msg)
+        num_samples = self.num_samples if num_samples is None else num_samples
+        test_samples = self._standard_normal(num_samples, y_test.shape[0], self._generator)
+        train_samples = self._standard_normal(num_samples, self.num_data, self._generator)
+
+        def bound(mean: torch.Tensor, variance: torch.Tensor) -> tuple[torch.Tensor, JointLatents]:
+            return self._test_bound(y_test, mean, variance, test_samples, train_samples, test_inputs, test_sequence_ids)
+
+        latents = TestLatents(self.initial_test_free_mean(y_test))
+        with frozen(self):
+            history = optimise_test_latents(
+                lambda mean, variance: bound(mean, variance)[0],
+                latents,
+                iterations=iterations,
+                learning_rate=learning_rate,
+                optimiser=optimiser,
+            )
+        with torch.no_grad():
+            terms, joint = bound(latents.mean, latents.variance)
+            kl_u = whitened_kl(self.u_mean, self.u_tril)
+            training_term = self.data_term(self.y_train, self.latent_mean, self.latent_variance, train_samples)
+            lower_bound = terms - kl_u if joint.coupled else terms - kl_u + training_term
+            training_bound = training_term - self.kl_divergence() - kl_u
+        return TestFit(
+            joint.test_mean.detach(), joint.test_variance.detach(), lower_bound, lower_bound - training_bound, history
+        )
 
 
-class SVIBayesianGPLVM(SVIModel):
+class SingleViewSVIModel(SVIModel):
+    """The base class for the SVI models with one data array. It has the prediction methods of these models."""
+
+    def _test_data(self, y: ArrayInput, *, partial: bool) -> tuple[torch.Tensor, slice]:
+        """Return test data with ``D`` columns, and the columns that a prediction returns.
+
+        Partial test data can have fewer columns. The function then adds columns of ``NaN``, and the prediction
+        returns these columns. With ``D`` columns, the prediction returns all columns.
+        """
+        data = self._tensor(y)
+        width = data.shape[-1]
+        if data.ndim != 2 or width == 0 or width > self.num_dims or (not partial and width != self.num_dims):
+            limit = f"not more than {self.num_dims}" if partial else str(self.num_dims)
+            msg = f"The test data must have the shape (N*, K), with {limit} columns. The shape is {tuple(data.shape)}."
+            raise ValueError(msg)
+        if width == self.num_dims:
+            return data, slice(None)
+        missing = torch.full((data.shape[0], self.num_dims - width), math.nan, dtype=data.dtype, device=data.device)
+        return torch.cat([data, missing], dim=1), slice(width, None)
+
+    def predict_new_latent_variables(
+        self,
+        y_test: ArrayInput,
+        *,
+        iterations: int = 1000,
+        learning_rate: float = 0.05,
+        optimiser: OptimiserName = "adam-lbfgs",
+        num_samples: int | None = None,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> LatentPrediction:
+        """Fit q(X*) for test data. The model parameters do not change.
+
+        Parameters
+        ----------
+        y_test : array_like
+            The test data, with the shape ``(N*, D)``. ``NaN`` marks a missing value.
+        iterations : int, default 1000
+            The maximum number of optimiser steps.
+        learning_rate : float, default 0.05
+            The Adam learning rate.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        num_samples : int, optional
+            The number of samples of each latent point in the fit. The default is the number of the model.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        LatentPrediction
+            The optimised q(X*) and the lower bound terms.
+        """
+        data, _ = self._test_data(y_test, partial=False)
+        fit = self.fit_test_data(
+            data,
+            iterations=iterations,
+            learning_rate=learning_rate,
+            optimiser=optimiser,
+            num_samples=num_samples,
+            test_inputs=test_inputs,
+            test_sequence_ids=test_sequence_ids,
+        )
+        bound = NewDataBound(fit.lower_bound, fit.test_log_likelihood)
+        return LatentPrediction(fit.latent_mean, fit.latent_variance, bound, fit.history)
+
+    def predict_missing_data(
+        self,
+        y_observed: ArrayInput,
+        *,
+        iterations: int = 1000,
+        learning_rate: float = 0.05,
+        optimiser: OptimiserName = "adam-lbfgs",
+        num_samples: int | None = None,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> MissingDataPrediction[MissingDataBound]:
+        """Fit q(X*) for partly observed test data, and predict the missing values.
+
+        Parameters
+        ----------
+        y_observed : array_like
+            The test data. Give the first ``Do`` dimensions with the shape ``(N*, Do)``: the model predicts the
+            other ``D - Do`` dimensions. Or give all dimensions with the shape ``(N*, D)`` and ``NaN`` for each
+            missing value: the model predicts all ``D`` dimensions.
+        iterations : int, default 1000
+            The maximum number of optimiser steps.
+        learning_rate : float, default 0.05
+            The Adam learning rate.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        num_samples : int, optional
+            The number of samples of each latent point in the fit. The default is the number of the model.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        MissingDataPrediction
+            The optimised q(X*) and the predictive distribution. Each covariance matrix is diagonal. The diagonal
+            holds the predictive variance of each test point.
+        """
+        data, predicted = self._test_data(y_observed, partial=True)
+        fit = self.fit_test_data(
+            data,
+            iterations=iterations,
+            learning_rate=learning_rate,
+            optimiser=optimiser,
+            num_samples=num_samples,
+            test_inputs=test_inputs,
+            test_sequence_ids=test_sequence_ids,
+        )
+        with torch.no_grad():
+            mean, variance = self.predict_observations(fit.latent_mean, fit.latent_variance)
+        bound = MissingDataBound(fit.lower_bound, mean[:, predicted], torch.diag_embed(variance[:, predicted].T))
+        return MissingDataPrediction(fit.latent_mean, fit.latent_variance, bound, fit.history)
+
+    def predict_from_inputs(
+        self, test_inputs: ArrayInput, *, test_sequence_ids: ArrayInput | None = None
+    ) -> InputPrediction:
+        """Predict the observed dimensions at new inputs of the GP prior, without test data.
+
+        The latent points come from the GP prediction at the test inputs (Damianou et al. 2016, section 4.2). Use
+        this method to interpolate or to forecast a sequence.
+
+        Parameters
+        ----------
+        test_inputs : array_like
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        InputPrediction
+            The marginals of q(X*) and the predictive mean and variance of each observed dimension.
+        """
+        with torch.no_grad():
+            latent_mean, latent_variance = self.predict_latents_from_inputs(test_inputs, test_sequence_ids)
+            mean, variance = self.predict_observations(latent_mean, latent_variance)
+        return InputPrediction(latent_mean, latent_variance, mean, variance)
+
+
+class SVIBayesianGPLVM(SingleViewSVIModel):
     """The Bayesian GP-LVM with stochastic variational inference.
 
     All observed dimensions share one kernel, as in :class:`~dp_gp_lvm.BayesianGPLVM`. The model works with each
@@ -692,8 +1122,158 @@ class SVIMRD(SVIModel):
         """
         return self.hyperprior_log_likelihood()
 
+    def _test_data(self, views_test: Sequence[ArrayInput], *, partial: bool) -> torch.Tensor:
+        """Return the test views as one array with ``D`` columns. The views without test data have ``NaN``."""
+        views = [self._tensor(v) for v in views_test]
+        count = len(views)
+        if partial and not 0 < count < self.number_of_views:
+            msg = "For missing data, give fewer test views than training views."
+            raise ValueError(msg)
+        if not partial and count != self.number_of_views:
+            msg = "The number of test views must be the same as the number of training views."
+            raise ValueError(msg)
+        if len({v.shape[0] for v in views}) != 1:
+            msg = "Each test view must have the same number of test points."
+            raise ValueError(msg)
+        if [v.shape[1] for v in views] != self.view_dims[:count]:
+            msg = "Each test view must have the same number of dimensions as the training view."
+            raise ValueError(msg)
+        data = torch.hstack(views)
+        width = self.num_dims - data.shape[1]
+        missing = torch.full((data.shape[0], width), math.nan, dtype=data.dtype, device=data.device)
+        return torch.cat([data, missing], dim=1)
 
-class SVIDPGPLVM(SVIModel):
+    def predict_new_latent_variables(
+        self,
+        views_test: Sequence[ArrayInput],
+        *,
+        iterations: int = 1000,
+        learning_rate: float = 0.05,
+        optimiser: OptimiserName = "adam-lbfgs",
+        num_samples: int | None = None,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> LatentPrediction:
+        """Fit q(X*) for test views. The model parameters do not change.
+
+        Parameters
+        ----------
+        views_test : sequence of array_like
+            One test array for each view, each with the shape ``(N*, Dv)``. ``NaN`` marks a missing value.
+        iterations : int, default 1000
+            The maximum number of optimiser steps.
+        learning_rate : float, default 0.05
+            The Adam learning rate.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        num_samples : int, optional
+            The number of samples of each latent point in the fit. The default is the number of the model.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        LatentPrediction
+            The optimised q(X*) and the lower bound terms.
+        """
+        fit = self.fit_test_data(
+            self._test_data(views_test, partial=False),
+            iterations=iterations,
+            learning_rate=learning_rate,
+            optimiser=optimiser,
+            num_samples=num_samples,
+            test_inputs=test_inputs,
+            test_sequence_ids=test_sequence_ids,
+        )
+        bound = NewDataBound(fit.lower_bound, fit.test_log_likelihood)
+        return LatentPrediction(fit.latent_mean, fit.latent_variance, bound, fit.history)
+
+    def predict_missing_data(
+        self,
+        views_observed: Sequence[ArrayInput],
+        *,
+        iterations: int = 1000,
+        learning_rate: float = 0.05,
+        optimiser: OptimiserName = "adam-lbfgs",
+        num_samples: int | None = None,
+        test_inputs: ArrayInput | None = None,
+        test_sequence_ids: ArrayInput | None = None,
+    ) -> MissingDataPrediction[ViewsMissingDataBound]:
+        """Fit q(X*) for the observed test views, and predict the other views.
+
+        Parameters
+        ----------
+        views_observed : sequence of array_like
+            The test arrays of the first ``Vo`` views, each with the shape ``(N*, Dv)``.
+        iterations : int, default 1000
+            The maximum number of optimiser steps.
+        learning_rate : float, default 0.05
+            The Adam learning rate.
+        optimiser : {"adam-lbfgs", "adam", "legacy"}, default "adam-lbfgs"
+            The optimiser. See :func:`~dp_gp_lvm.optim.minimise`.
+        num_samples : int, optional
+            The number of samples of each latent point in the fit. The default is the number of the model.
+        test_inputs : array_like, optional
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``. Give them only if the prior on
+            the latent space is a :class:`~dp_gp_lvm.GPPrior`.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        MissingDataPrediction
+            The optimised q(X*) and the predictive distribution of each unobserved view. Each covariance matrix is
+            diagonal. The diagonal holds the predictive variance of each test point.
+        """
+        fit = self.fit_test_data(
+            self._test_data(views_observed, partial=True),
+            iterations=iterations,
+            learning_rate=learning_rate,
+            optimiser=optimiser,
+            num_samples=num_samples,
+            test_inputs=test_inputs,
+            test_sequence_ids=test_sequence_ids,
+        )
+        with torch.no_grad():
+            mean, variance = self.predict_observations(fit.latent_mean, fit.latent_variance)
+        unobserved = self.view_slices[len(views_observed) :]
+        bound = ViewsMissingDataBound(
+            fit.lower_bound,
+            [mean[:, dims] for dims in unobserved],
+            [torch.diag_embed(variance[:, dims].T) for dims in unobserved],
+        )
+        return MissingDataPrediction(fit.latent_mean, fit.latent_variance, bound, fit.history)
+
+    def predict_from_inputs(
+        self, test_inputs: ArrayInput, *, test_sequence_ids: ArrayInput | None = None
+    ) -> ViewsInputPrediction:
+        """Predict each view at new inputs of the GP prior, without test data.
+
+        Parameters
+        ----------
+        test_inputs : array_like
+            The inputs of the test points, with the shape ``(N*,)`` or ``(N*, P)``.
+        test_sequence_ids : array_like, optional
+            The sequence of each test point. Give it only if the prior has more than one sequence.
+
+        Returns
+        -------
+        ViewsInputPrediction
+            The marginals of q(X*) and the predictive mean and variance of each view.
+        """
+        with torch.no_grad():
+            latent_mean, latent_variance = self.predict_latents_from_inputs(test_inputs, test_sequence_ids)
+            mean, variance = self.predict_observations(latent_mean, latent_variance)
+        slices = self.view_slices
+        return ViewsInputPrediction(
+            latent_mean, latent_variance, [mean[:, dims] for dims in slices], [variance[:, dims] for dims in slices]
+        )
+
+
+class SVIDPGPLVM(SingleViewSVIModel):
     """The DP-GP-LVM with stochastic variational inference.
 
     A Dirichlet process prior over the hyperparameters of the kernel and of the likelihood groups the observed

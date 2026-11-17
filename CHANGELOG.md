@@ -48,6 +48,16 @@ This file records the notable changes of each version. The format follows
   model optimises only the free parameters of the test points.
 - `LatentPrior`, `StandardNormalPrior`, and `JointLatents`. `kl_divergence()`, `joint_latents()`, and
   `test_marginals()` are methods of the base class of the models.
+- Prediction for the SVI models. `SVIBayesianGPLVM` and `SVIDPGPLVM` have `predict_new_latent_variables`,
+  `predict_missing_data`, and `predict_from_inputs`. `SVIMRD` has the same methods for lists of views.
+  - q(U) is explicit, so a test row adds only its own term to the lower bound. The fit of q(X\*) uses fixed
+    samples, so `"adam-lbfgs"` works. The model parameters do not change.
+  - `predict_missing_data` takes the first `Do` dimensions, as the collapsed models, and predicts the other
+    dimensions. It also takes all `D` dimensions with `NaN` for each missing value. It then predicts all dimensions.
+  - `predict_observations` gives the predictive mean and variance at latent points with uncertainty, for each
+    likelihood. `predictive_log_density` gives the log predictive density of held-out values.
+  - For an RBF kernel and Gaussian noise, the prediction with the best q(U) is the prediction of `BayesianGPLVM`.
+    The tests check this.
 - `SVIDPGPLVM`: the DP-GP-LVM with stochastic variational inference. The DP atoms hold the hyperparameters of the
   kernel family and of the likelihood. Each observed dimension uses the expected hyperparameters of its group
   assignments, as in `DPGPLVM` with `expectation="plug_in"` (paper eqs. 22 and 23). The DP terms are the terms of
