@@ -61,6 +61,8 @@ experiments = [
     "matplotlib>=3.10.7,<4",
     "scipy>=1.15,<2",
 ]
+# The release workflow checks the metadata of the distributions with twine. uv.lock pins it.
+release = ["twine>=7,<8"]
 # The torch build for development in this repository. "cpu" is the default. To use CUDA on Linux or Windows, run
 # `uv sync --no-group cpu --group cuda`. These groups do not change the published package, which needs plain torch.
 cpu = ["torch>=2.6,<3"]
