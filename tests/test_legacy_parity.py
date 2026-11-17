@@ -311,7 +311,14 @@ def test_library_predictive_mean_matches_the_legacy_code(case: str, stage: str) 
 def test_long_training_follows_the_legacy_code() -> None:
     """Over 1000 Adam steps, the port must follow the legacy optimisation and reach the same groups.
 
-    Rounding differences grow slowly in a non-convex optimisation, so the tolerance is looser than at the start.
+    The objective is not convex, so a small rounding difference can grow in some phases of the training and become
+    small again later. The rounding changes with the CPU. These are the largest relative differences from the legacy
+    values in 64 runs with relative noise of 1e-15 to 1e-13 on the initial values or on each gradient:
+
+    - Steps 0 to 250: 7e-9. The tolerance is 1e-7. ``torch.optim.Adam`` gives 1.6e-6, so this part finds a change
+      to the legacy optimiser.
+    - Steps 300 to 950: 1e-4. The tolerance is 1e-3. One x86 CI runner gave 1.7e-4 at step 950.
+    - The final objective: 8e-6. The tolerance is 1e-4. The groups were the same in all runs.
     """
     arrays = load("dp_gp_lvm_long_training")
     info = meta()["long_training"]
@@ -320,6 +327,10 @@ def test_long_training_follows_the_legacy_code() -> None:
     every = info["record_every"]
     history = fit(model, info["steps"], learning_rate=meta()["learning_rate"], optimiser="legacy")
     ours = np.array([*history[::every], model.objective().detach().item()])
-    close(ours, arrays[f"train.adam.objectives_every_{every}"], rtol=1e-4)
+    expected = arrays[f"train.adam.objectives_every_{every}"]
+    early = 250 // every + 1  # The records of the steps 0 to 250.
+    close(ours[:early], expected[:early], rtol=1e-7)
+    close(ours[early:-1], expected[early:-1], rtol=1e-3)
+    close(ours[-1], expected[-1], rtol=1e-4)
     expected_groups = arrays["train.adam.final_assignments"].argmax(axis=-1)
     np.testing.assert_array_equal(model.assignments.argmax(dim=-1).numpy(), expected_groups)
