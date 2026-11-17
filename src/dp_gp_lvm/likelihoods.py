@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch.nn import functional
 
-from dp_gp_lvm._numerics import gauss_hermite
+from dp_gp_lvm._numerics import column_scale, gauss_hermite
 
 #: The default number of points of the Gauss-Hermite quadrature.
 GAUSS_HERMITE_POINTS = 20
@@ -166,9 +166,7 @@ class Likelihood(ABC):
         values = np.where(np.isnan(values), np.nanmean(values, axis=0), values)
         if not self.standardise_start:
             return values
-        scale = values.std(axis=0)
-        scale[scale == 0.0] = 1.0
-        return (values - values.mean(axis=0)) / scale
+        return (values - values.mean(axis=0)) / column_scale(values)
 
     def initial_bias(self, y: np.ndarray) -> np.ndarray | None:
         """Return the initial constant that a model adds to the function values of each observed dimension.

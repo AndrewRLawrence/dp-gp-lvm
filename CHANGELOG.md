@@ -232,6 +232,12 @@ keeps the legacy formulas, and the parity tests compare them with the legacy gol
   paper. Before, a `(D,)` minus `(D, 1)` broadcast made a `(D, D)` term. The fix changes q(X*), the missing-data
   predictions, and the test log-likelihood of DP-GP-LVM.
 
+This fix is not in that document:
+
+- `standardise` in `experiments/_common.py` finds a constant column with a tolerance. Before, it compared the standard
+  deviation with zero. The mean of equal values can have a rounding error, so the standard deviation was not always
+  exactly zero, and the function then divided the rounding error by itself. The column became 1 or −1.
+
 ## [1.0.0] - Unreleased
 
 This version ports the code from TensorFlow 1.15 to PyTorch. The maths stays the same. The git tag `legacy-tf1`

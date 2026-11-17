@@ -41,6 +41,7 @@ from dp_gp_lvm import (
     SVIModel,
     fit_restarts,
 )
+from dp_gp_lvm._numerics import column_scale
 from dp_gp_lvm.distributions import mvn_log_pdf
 from dp_gp_lvm.optim import OptimiserName
 
@@ -389,8 +390,7 @@ def standardise(train: np.ndarray, *others: np.ndarray) -> tuple[np.ndarray, ...
     A column with zero variance keeps a scale of one, as in ``sklearn.preprocessing.StandardScaler``.
     """
     mean = train.mean(axis=0)
-    scale = train.std(axis=0)
-    scale[scale == 0.0] = 1.0
+    scale = column_scale(train)
     return tuple((x - mean) / scale for x in (train, *others))
 
 

@@ -16,6 +16,9 @@ DTYPE = torch.float64
 #: The jitter that the covariance matrices add to their diagonal.
 JITTER = 1.0e-8
 
+#: A column is constant if its standard deviation is not more than this fraction of its largest absolute value.
+CONSTANT_TOLERANCE = 1.0e-12
+
 #: The type of array input that the public functions accept.
 type ArrayInput = npt.ArrayLike | torch.Tensor
 
@@ -102,6 +105,27 @@ def as_numpy(value: ArrayInput) -> np.ndarray:
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().to(torch.float64).numpy()
     return np.array(value, dtype=np.float64)
+
+
+def column_scale(values: np.ndarray) -> np.ndarray:
+    """Return the standard deviation of each column, and one for each constant column.
+
+    The mean of equal values can have a rounding error. Thus, the standard deviation of a constant column is not
+    always exactly zero, and a comparison with zero is not sufficient to find such a column.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The values, with the shape ``(N, D)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The scale of each column, with the shape ``(D,)``. It is safe as a divisor.
+    """
+    scale = values.std(axis=0)
+    scale[scale <= CONSTANT_TOLERANCE * np.abs(values).max(axis=0)] = 1.0
+    return scale
 
 
 def batch_eye(size: int, batch: int, like: torch.Tensor) -> torch.Tensor:

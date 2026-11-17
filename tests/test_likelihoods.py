@@ -250,7 +250,7 @@ def test_start_values_and_initial_bias(rng: np.random.Generator) -> None:
     start = PoissonLikelihood().start_values(counts)
     np.testing.assert_allclose(start.mean(axis=0), 0.0, atol=1e-12)
     np.testing.assert_allclose(start[:, 0].std(), 1.0)
-    np.testing.assert_allclose(start[:, 1], 0.0)
+    np.testing.assert_allclose(start[:, 1], 0.0, atol=1e-12)
     np.testing.assert_allclose(PoissonLikelihood().initial_bias(counts), np.log(counts.mean(axis=0) + 1e-3))
 
     binary = (rng.random((20, 2)) < 0.3).astype(np.float64)
